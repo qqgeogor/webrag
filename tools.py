@@ -334,7 +334,7 @@ class HybridSearch:
         self, 
         query: str, 
         top_k: int = 5, 
-        alpha: float = 0.5
+        alpha: float = 0.9
     ) -> List[Dict]:
         """
         混合检索方法

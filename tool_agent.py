@@ -132,8 +132,9 @@ def main():
         description="我可以帮您搜索信息、进行计算等。请输入您的问题。",
         examples=[
             ["请帮我计算 123 加 456"],
-            ["慈禧太后是什么人"],
-            ["请帮我搜索关于 transformer architecture 的最新论文"],
+            ["慈禧太后是什么人，罗列具体的重大事件"],
+            ["请帮我搜索关于 transformer architecture 的最新论文，并提供摘要"],
+            ['怎么样才能做出好吃的蛋炒饭'],
         ]
     )
     
@@ -142,3 +143,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+    
