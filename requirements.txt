@@ -1,0 +1,12 @@
+trafilatura
+beautifulsoup4
+requests
+langchain
+langchain-community
+langchain-openai
+arxiv
+openai
+pydantic
+httpx
+pydantic-core
+chromadb
