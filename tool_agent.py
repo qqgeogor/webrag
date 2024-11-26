@@ -1,3 +1,7 @@
+import os
+
+os.environ['HF_ENDPOINT'] = 'https://hf-mirror.com'
+
 from abc import ABC, abstractmethod
 from typing import Annotated, Any, Dict, List, Optional, Sequence, TypedDict
 
@@ -42,7 +46,7 @@ def create_workflow() -> Graph:
     
     workflow.add_node("websearch_agent", websearch.invoke)
     workflow.add_node("calculator_agent", calculator.invoke)
-    # workflow.add_node("arxiv_agent", arxiv.invoke)
+    workflow.add_node("arxiv_agent", arxiv.invoke)
     workflow.add_node("result_formatter", formatter.invoke)
     
     # 定义条件路由函数
@@ -58,7 +62,7 @@ def create_workflow() -> Graph:
         "master",router,
         {
             'calculator_agent': "calculator_agent",
-            # 'arxiv_agent': "arxiv_agent",
+            'arxiv_agent': "arxiv_agent",
             'websearch_agent': "websearch_agent",
             'end': END
         }
@@ -71,10 +75,10 @@ def create_workflow() -> Graph:
         "result_formatter",
     )
     
-    # workflow.add_edge(
-    #     "arxiv_agent",
-    #     "result_formatter",
-    # )
+    workflow.add_edge(
+        "arxiv_agent",
+        "result_formatter",
+    )
 
     workflow.add_edge(
         "websearch_agent",

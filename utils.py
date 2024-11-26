@@ -2,8 +2,18 @@
 from bs4 import BeautifulSoup
 import trafilatura
 import re
+from langchain_openai import ChatOpenAI
 
-
+class LLMConfig:
+    @staticmethod
+    def create_llm() -> ChatOpenAI:
+        return ChatOpenAI(
+            model='deepseek-chat', 
+            openai_api_key='sk-9693411e1fcb4176ab62ed97f98c68f3', 
+            openai_api_base='https://api.deepseek.com',
+            temperature=0,
+            max_tokens=4096,
+        )
     
 
 class WebContentExtractor:

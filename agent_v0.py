@@ -1,52 +1,57 @@
-from abc import ABC, abstractmethod
-from typing import Annotated, Any, Dict, List, Optional, Sequence, TypedDict
+import os
 
+os.environ['HF_ENDPOINT'] = 'https://hf-mirror.com'
+
+from typing import Annotated, Any, Dict, List, Optional, Sequence, TypedDict
+from langchain_core.messages import BaseMessage, HumanMessage, AIMessage
+from langchain_openai import ChatOpenAI
+from langgraph.graph import Graph, StateGraph,END
+from langgraph.prebuilt import ToolExecutor
+from pydantic import BaseModel, Field
 import operator
 from enum import Enum
 import arxiv
 import httpx
-from pydantic import BaseModel, Field
-
-from prompt import prompt_master
-from utils import WebContentExtractor
-from logging_config import log_tool_usage
-
-import chromadb
+import json
+import asyncio
+from pypdf import PdfReader
+import io
+import requests
+from chromadb import Client, Settings
+from datasketch import MinHash, MinHashLSH
+import hashlib
+import tempfile
+import re
 
 
 from rank_bm25 import BM25Okapi
 from sentence_transformers import SentenceTransformer
 import numpy as np
-from typing import List, Dict
+from typing import List, Dict, Tuple
+from dataclasses import dataclass
 import numpy as np
 from sklearn.cluster import AgglomerativeClustering
 import networkx as nx
+from nltk.tokenize import sent_tokenize
 import re
-import hashlib
-from utils import LLMConfig
 
-
-
-class SemanticChunk(BaseModel):
+@dataclass
+class SemanticChunk:
     content: str
     start_idx: int
     end_idx: int
     coherence_score: float
     sentences: List[str]
 
-class SemanticChunkerTool:
+class SemanticChunker:
     def __init__(
         self,
         model_name: str = 'all-MiniLM-L6-v2',
         min_chunk_size: int = 100,
         max_chunk_size: int = 1000,
-        overlap_size: int = 50,
-        embedding_model: SentenceTransformer = None
+        overlap_size: int = 50
     ):
-        if embedding_model is None:
-            self.model = SentenceTransformer(model_name,cache_folder='./cache')
-        else:
-            self.model = embedding_model
+        self.model = SentenceTransformer(model_name)
         self.min_chunk_size = min_chunk_size
         self.max_chunk_size = max_chunk_size
         self.overlap_size = overlap_size
@@ -135,7 +140,6 @@ class SemanticChunkerTool:
                 current_start,
                 len(sentences)
             )
-
             chunks.append(SemanticChunk(
                 content=' '.join(current_chunk),
                 start_idx=current_start,
@@ -145,7 +149,6 @@ class SemanticChunkerTool:
             ))
         
         return chunks
-
 
     async def chunk_by_topic_segmentation(
         self,
@@ -260,61 +263,98 @@ class SemanticChunkerTool:
         
         return chunks
 
-# 1. 基础模型定义
-class PaperInfo(BaseModel):
+
+# 设置环境变量来控制线程数
+os.environ["OMP_NUM_THREADS"] = "4"
+os.environ["OPENBLAS_NUM_THREADS"] = "4"
+os.environ["MKL_NUM_THREADS"] = "4"
+os.environ["VECLIB_MAXIMUM_THREADS"] = "4"
+os.environ["NUMEXPR_NUM_THREADS"] = "4"
+
+class PDFChunk(BaseModel):
+    chunk_id: str
+    content: str
+    chunk_index: int
+
+class PDFContent(BaseModel):
     title: str
-    abstract: str
+    chunks: List[PDFChunk]
     pdf_url: str
-    authors: List[str]
+    hash_id: str
+    is_duplicate: bool = False
+    duplicate_hash: Optional[str] = None
 
+class TextChunker:
+    def __init__(self, chunk_size: int = 1000, chunk_overlap: int = 200):
+        self.chunk_size = chunk_size
+        self.chunk_overlap = chunk_overlap
 
-# 3. 工具定义
-class ArxivTool:
+    def split_text(self, text: str) -> List[str]:
+        # 按段落分割文本
+        paragraphs = text.split('\n\n')
+        chunks = []
+        current_chunk = []
+        current_size = 0
+        
+        for para in paragraphs:
+            para = para.strip()
+            if not para:
+                continue
+                
+            para_size = len(para)
+            
+            if current_size + para_size > self.chunk_size:
+                # 如果当前块已满，保存它
+                if current_chunk:
+                    chunks.append(' '.join(current_chunk))
+                # 保留最后一部分作为重叠
+                overlap_size = 0
+                overlap_chunks = []
+                for chunk in reversed(current_chunk):
+                    if overlap_size + len(chunk) <= self.chunk_overlap:
+                        overlap_chunks.insert(0, chunk)
+                        overlap_size += len(chunk)
+                    else:
+                        break
+                current_chunk = overlap_chunks
+                current_size = overlap_size
+            
+            current_chunk.append(para)
+            current_size += para_size
+        
+        # 添加最后一个块
+        if current_chunk:
+            chunks.append(' '.join(current_chunk))
+            
+        return chunks
+
+class RAGTool:
     def __init__(self):
-        self.name = "arxiv_search"
-        self.description = "搜索arxiv论文的工具"
-
-    async def search_papers(self, keyword: str, max_results: int = 10) -> List[PaperInfo]:
-        client = arxiv.Client()
-        search = arxiv.Search(
-            query=keyword,
-            max_results=max_results,
-            sort_by=arxiv.SortCriterion.Relevance
+        # 设置 ChromaDB 的配置
+        settings = Settings(
+            persist_directory="./chroma_db",
+            anonymized_telemetry=False,
+            allow_reset=True,
+            is_persistent=True
         )
-
-        papers = []
-        async with httpx.AsyncClient() as http_client:
-            for result in client.results(search):
-                paper = PaperInfo(
-                    title=result.title,
-                    abstract=result.summary,
-                    pdf_url=result.pdf_url,
-                    authors=[author.name for author in result.authors]
-                )
-                papers.append(paper)
-        return papers
-
-class CalculatorTool:
-    def __init__(self):
-        self.name = "calculator"
-        self.description = "执行基础数学运算"
-
-    def add(self, a: float, b: float) -> float:
-        return a + b
-    
-
-class HybridSearch:
-    def __init__(self,chroma_client,collection,embedding_model=None):
-        self.chroma_client = chroma_client
-        self.collection = collection
         
+        # 创建客户端
+        self.chroma_client = Client(settings)
+        self.collection = self.chroma_client.get_or_create_collection(
+            name="paper_chunks",
+            metadata={"hnsw:space": "cosine"}  # 使用余弦相似度
+        )
         
-        if embedding_model is None:
-            model_name = 'all-MiniLM-L6-v2'
-            self.model = SentenceTransformer(model_name,cache_folder='./cache')
-        else:
-            self.model = embedding_model
-
+        self.lsh = MinHashLSH(threshold=0.8, num_perm=128)
+        self.chunker = TextChunker()
+        
+        # 修改 embedding 模型初始化
+        try:
+            self.embedding_model = SentenceTransformer('sentence-transformers/all-MiniLM-L6-v2')
+        except:
+            # 如果上面的失败，尝试不同的模型名称
+            self.embedding_model = SentenceTransformer('all-MiniLM-L6-v2')
+            
         # 用于存储BM25索引的属性
         self.bm25_index = None
         self.doc_store = []  # 存储文档原文
@@ -328,7 +368,7 @@ class HybridSearch:
         
     def _get_embedding(self, text: str) -> np.ndarray:
         """获取文本的embedding向量"""
-        return self.model.encode(text)
+        return self.embedding_model.encode(text)
     
     async def hybrid_search(
         self, 
@@ -405,155 +445,240 @@ class HybridSearch:
         except Exception as e:
             print(f"检索过程中出错: {str(e)}")
             return []
-        
-
-class WebSearchParams(BaseModel):
-    query: str = Field(..., description="搜索关键词")
-    max_results: int = Field(default=5, description="最大返回结果数")
-
-class WebSearchTool:
-    def __init__(self):
-        self.name = "web_search"
-        self.description = "使用Serper.dev搜索网页内容的工具"
-        self.api_key = "6d8a07a4c3dbecf40509ae64a9461b38c2c1b99f"
-        self.base_url = "https://google.serper.dev/search"
-        self.extractor = WebContentExtractor()
-        self.model_name: str = 'all-MiniLM-L6-v2'
-        
-        self.embedding_model = SentenceTransformer(self.model_name,cache_folder='./cache')
-        # 初始化 SemanticChunkerTool
-        self.semantic_chunker = SemanticChunkerTool(
-            min_chunk_size=100,
-            max_chunk_size=1000,
-            overlap_size=50,
-            embedding_model = self.embedding_model
-        )
-        # 初始化 ChromaDB 客户端 - 更新配置方式
-        self.chroma_client = chromadb.PersistentClient(path="./chroma_db")
-        # 创建网页内容的集合
-        self.collection = self.chroma_client.get_or_create_collection(
-            name="web_search_content",
-            metadata={"hnsw:space": "cosine"}
-        )
-        self.hybrid_search = HybridSearch(self.chroma_client,self.collection,self.embedding_model)
-
-    async def fetch_and_process_content(self, url: str, title: str) -> List[dict]:
-        """获取网页内容并进行语义分块"""
-        try:
-            # 获取原始内容
-            async with httpx.AsyncClient() as client:
-                response = await client.get(url, timeout=10.0)
-                response.raise_for_status()
-                content = await self.extractor.extract_content(response.text)
-                
-            # 使用 SemanticChunker 进行分块
-            chunks = await self.semantic_chunker.chunk_by_semantic_similarity(content)
-            
-            # 存储到 ChromaDB
-            documents = []
-            metadatas = []
-            ids = []
-            
-            for i, chunk in enumerate(chunks):
-                chunk_id = hashlib.md5(f"{url}_{i}".encode()).hexdigest()
-                documents.append(chunk.content)
-                metadatas.append({
-                    "url": url,
-                    "title": title,
-                    "chunk_index": i,
-                    "coherence_score": chunk.coherence_score
-                })
-                ids.append(chunk_id)
-            
-            # 使用 SentenceTransformer 生成 embeddings
-            if documents:
-                embeddings = self.semantic_chunker.model.encode(documents).tolist()  # 转换为列表以便序列化
-                self.collection.add(
-                    documents=documents,
-                    metadatas=metadatas,
-                    ids=ids,
-                    embeddings=embeddings
-                )
-            
-            return [{"id": id, "content": doc, "metadata": meta} 
-                   for id, doc, meta in zip(ids, documents, metadatas)]
-                   
-        except Exception as e:
-            print(f"处理网页内容时出错: {str(e)}")
-            return []
-
-    @log_tool_usage
-    async def search(self, query: str, max_results: int = 5) -> List[dict]:
-        headers = {
-            "X-API-KEY": self.api_key,
-            "Content-Type": "application/json"
-        }
-        
-        payload = {
-            "q": query,
-            "num": max_results
-        }
-        
-        results = []
-        async with httpx.AsyncClient() as client:
-            response = await client.post(
-                self.base_url,
-                headers=headers,
-                json=payload
-            )
-            
-            if response.status_code != 200:
-                raise Exception(f"搜索API调用失败: {response.text}")
-                
-            data = response.json()
-            organic_results = data.get("organic", [])
-            
-            for result in organic_results[:max_results]:
-                chunks = await self.fetch_and_process_content(
-                    result.get("link", ""),
-                    result.get("title", "")
-                )
-                
-                if chunks:
-                    results.extend(chunks)
-            
-            results = await self.hybrid_search.hybrid_search(query,max_results)
-            return results
     
-    async def query_similar_content(
-        self,
-        query: str,
-        n_results: int = 5
-    ) -> List[dict]:
-        """从 ChromaDB 中检索相似内容"""
+    async def process_pdf(self, pdf_url: str, title: str) -> Optional[PDFContent]:
         try:
-            results = self.collection.query(
-                query_texts=[query],
-                n_results=n_results
-            )
+            async with httpx.AsyncClient() as client:
+                response = await client.get(pdf_url)
+                with tempfile.NamedTemporaryFile(suffix='.pdf') as tmp_file:
+                    tmp_file.write(response.content)
+                    tmp_file.flush()
+                    
+                    reader = PdfReader(tmp_file.name)
+                    text = ""
+                    for page in reader.pages:
+                        text += page.extract_text() + "\n"
+                    
+                    # 分块处理
+                    chunks = self.chunker.split_text(text)
+                    pdf_chunks = []
+                    for i, chunk in enumerate(chunks):
+                        chunk_id = hashlib.md5(f"{text}{i}".encode()).hexdigest()
+                        pdf_chunks.append(PDFChunk(
+                            chunk_id=chunk_id,
+                            content=chunk,
+                            chunk_index=i
+                        ))
+                    
+            # 创建整个文档的 MinHash
+            minhash = MinHash(num_perm=128)
+            for d in text.split():
+                minhash.update(d.encode('utf-8'))
             
-            formatted_results = []
-            for i in range(len(results['documents'][0])):
-                formatted_results.append({
-                    'content': results['documents'][0][i],
-                    'metadata': results['metadatas'][0][i],
-                    'distance': results['distances'][0][i],
-                    'id': results['ids'][0][i]
-                })
+            # 生成文档唯一标识
+            hash_id = hashlib.md5(text.encode()).hexdigest()
             
-            return formatted_results
+            # 检查重复
+            duplicate_docs = self.lsh.query(minhash)
+            if not duplicate_docs:
+                self.lsh.insert(hash_id, minhash)
+                return PDFContent(
+                    title=title,
+                    chunks=pdf_chunks,
+                    pdf_url=pdf_url,
+                    hash_id=hash_id,
+                    is_duplicate=False
+                )
+            else:
+                return PDFContent(
+                    title=title,
+                    chunks=pdf_chunks,
+                    pdf_url=pdf_url,
+                    hash_id=hash_id,
+                    is_duplicate=True,
+                    duplicate_hash=duplicate_docs[0]
+                )
+            
         except Exception as e:
-            print(f"检索相似内容时出错: {str(e)}")
-            return []
+            print(f"处理PDF时出错: {str(e)}")
+            return None
+            
+    def store_in_chroma(self, pdf_content: PDFContent):
+        """存储文档到ChromaDB，同时更新BM25索引"""
+        documents = []
+        metadatas = []
+        ids = []
+        embeddings = []
+        
+        for chunk in pdf_content.chunks:
+            documents.append(chunk.content)
+            metadatas.append({
+                "title": pdf_content.title,
+                "pdf_url": pdf_content.pdf_url,
+                "doc_hash_id": pdf_content.hash_id,
+                "chunk_index": chunk.chunk_index
+            })
+            ids.append(chunk.chunk_id)
+            embeddings.append(self._get_embedding(chunk.content).tolist())
+        
+        # 存储到ChromaDB
+        self.collection.add(
+            documents=documents,
+            metadatas=metadatas,
+            ids=ids,
+            embeddings=embeddings
+        )
+        
+        # 更新BM25索引和文档存储
+        all_docs = self.collection.get()["documents"]
+        self._create_bm25_index(all_docs)
+        self.doc_store = all_docs
 
+# 1. 基础模型定义
+class PaperInfo(BaseModel):
+    title: str
+    abstract: str
+    pdf_url: str
+    authors: List[str]
 
+# 2. 状态定义
+class AgentState(TypedDict):
+    messages: Annotated[Sequence[BaseMessage], operator.add]
+    current_agent: str
+    next_agent: Optional[str]
+    final_answer: Optional[str]
+    tools_output: Dict[str, Any]
+
+# 3. 工具定义
+class ArxivTool:
+    def __init__(self):
+        self.name = "arxiv_search"
+        self.description = "搜索arxiv论文的工具"
+
+    async def search_papers(self, keyword: str, max_results: int = 10) -> List[PaperInfo]:
+        client = arxiv.Client()
+        search = arxiv.Search(
+            query=keyword,
+            max_results=max_results,
+            sort_by=arxiv.SortCriterion.Relevance
+        )
+
+        papers = []
+        async with httpx.AsyncClient() as http_client:
+            for result in client.results(search):
+                paper = PaperInfo(
+                    title=result.title,
+                    abstract=result.summary,
+                    pdf_url=result.pdf_url,
+                    authors=[author.name for author in result.authors]
+                )
+                papers.append(paper)
+        return papers
+
+class CalculatorTool:
+    def __init__(self):
+        self.name = "calculator"
+        self.description = "执行基础数学运算"
+
+    def add(self, a: float, b: float) -> float:
+        return a + b
+
+# 4. 添加 LLM 配置类
+class LLMConfig:
+    @staticmethod
+    def create_llm() -> ChatOpenAI:
+        return ChatOpenAI(
+            model='deepseek-chat', 
+            openai_api_key='sk-9693411e1fcb4176ab62ed97f98c68f3', 
+            openai_api_base='https://api.deepseek.com',
+            temperature=0,
+            max_tokens=4096,
+        )
+
+# 1. 添加新的Pydantic模型定义
+class CalculatorParams(BaseModel):
+    a: float
+    b: float
+
+class ArxivParams(BaseModel):
+    keyword: str
+    max_results: int = Field(default=10)
+
+class AgentDecision(BaseModel):
+    next_agent: str = Field(
+        ...,  # 表示必填字段
+        description="下一个要执行的代理名称",
+    )
+    params: CalculatorParams | ArxivParams
+
+# 5. Agent 定义
+class MasterAgent:
+    def __init__(self):
+        self.llm = LLMConfig.create_llm()
+        self.system_prompt = """你是一个主控制代理。分析用户请求并决定使用哪个子程序，如果不存在匹配的子程序，直接返回结果。
+
+当用户需要计算时，返回：
+{
+    "next_agent": "calculator_agent",
+    "params": {
+        "a": 数字1,
+        "b": 数字2
+    }
+}
+
+当用户需要搜索论文时，返回：
+{
+    "next_agent": "arxiv_agent",
+    "params": {
+        "keyword": "搜索关键词",
+        "max_results": 搜索数量
+    }
+}
+
+注意：next_agent 必须严格是 "calculator_agent" 或 "arxiv_agent" 之一。
+"""
+
+    async def invoke(self, state: AgentState) -> AgentState:
+        messages = [
+            {"role": "system", "content": self.system_prompt},
+            {"role": "user", "content": state["messages"][-1].content}
+        ]
+        
+        response = await self.llm.ainvoke(messages)
+
+        
+        try:
+            # 使用Pydantic模型解析和验证响应
+            raw_decision = json.loads(response.content)
+            decision = AgentDecision.model_validate(raw_decision)
+            
+            state["next_agent"] = decision.next_agent
+            state["tools_output"]["params"] = decision.params.model_dump()
+            return state
+            
+        except Exception as e:
+            state["final_answer"] = response.content
+            state["next_agent"] = None
+            return state
+
+class CalculatorAgent:
+    def __init__(self):
+        self.llm = LLMConfig.create_llm()
+        self.tool = CalculatorTool()
+        
+    async def invoke(self, state: AgentState) -> AgentState:
+        params = state["tools_output"]["params"]
+        result = self.tool.add(params["a"], params["b"])
+        state["tools_output"]["result"] = result
+
+        return state
 
 class RelevanceCheckResult(BaseModel):
     is_relevant: bool
     confidence: float
     reason: str
 
-class RelevanceCheckTool:
+class RelevanceCheckAgent:
     def __init__(self):
         self.llm = LLMConfig.create_llm()
         self.system_prompt = """你是一个专门判断文档相关性的助手。你需要判断给定的文档片段是否与用户查询相关。
@@ -630,7 +755,7 @@ class RelevanceCheckTool:
                 reason=f"处理出错: {str(e)}"
             )
 
-class GeneratorTool:
+class GeneratorAgent:
     def __init__(self):
         self.llm = LLMConfig.create_llm()
         self.system_prompt = """你是一个专业的学术助手。你的任务是基于检索到的相关文档片段，为用户的查询生成准确、全面的回答。
@@ -656,7 +781,7 @@ class GeneratorTool:
     ) -> str:
         # 构建上下文
         context = "\n\n".join([
-            f"文档 {i+1} (\n{doc['content']}"
+            f"文档 {i+1} (置信度: {doc['relevance_check']['confidence']}):\n{doc['content']}"
             for i, doc in enumerate(relevant_docs)
         ])
         
@@ -684,7 +809,7 @@ class HallucinationCheckResult(BaseModel):
     issues: List[str] = Field(default_factory=list, description="发现的问题列表")
     suggestions: List[str] = Field(default_factory=list, description="改进建议")
 
-class HallucinationCheckTool:
+class HallucinationCheckAgent:
     def __init__(self):
         self.llm = LLMConfig.create_llm()
         self.system_prompt = """你是一个专门检测答案质量的助手。你需要判断生成的答案是否真实可靠地回答了用户的问题。
@@ -773,7 +898,7 @@ class ChunkAbstractResult(BaseModel):
     original_length: int = Field(description="原文长度")
     abstract_length: int = Field(description="摘要长度")
 
-class ChunkAbstractTool():
+class ChunkAbstractAgent:
     def __init__(self):
         self.llm = LLMConfig.create_llm()
         self.system_prompt = """你是一个专门提炼文档核心内容的助手。你需要将长文本片段压缩为简短但信息丰富的摘要。
@@ -850,3 +975,278 @@ class ChunkAbstractTool():
                 original_length=len(chunk_content),
                 abstract_length=0
             )
+
+# 修改 ArxivAgent 以包含 GeneratorAgent
+class ArxivAgent:
+    def __init__(self):
+        self.llm = LLMConfig.create_llm()
+        self.tool = ArxivTool()
+        self.rag_tool = RAGTool()
+        self.relevance_checker = RelevanceCheckAgent()
+        self.generator = GeneratorAgent()
+        self.hallucination_checker = HallucinationCheckAgent()
+        self.top_k = 5
+        self.chunk_abstracter = ChunkAbstractAgent()
+        
+    async def invoke(self, state: AgentState) -> AgentState:
+        try:
+            params = state["tools_output"]["params"]
+            papers = await self.tool.search_papers(
+                keyword=params["keyword"],
+                max_results=params.get("max_results", 10)
+            )
+            
+            # 处理PDF并存储
+            processed_papers = []
+            for paper in papers:
+                pdf_content = await self.rag_tool.process_pdf(paper.pdf_url, paper.title)
+                if pdf_content and not pdf_content.is_duplicate:
+                    self.rag_tool.store_in_chroma(pdf_content)
+                    processed_papers.append(paper)
+            
+            # 混合检索
+            results = await self.rag_tool.hybrid_search(
+                query=params["keyword"],
+                top_k=self.top_k,
+                alpha=0.7
+            )
+            
+            # 相关性检查
+            filtered_results = []
+            for result in results:
+                relevance_check = await self.relevance_checker.check_relevance(
+                    query=params["keyword"],
+                    document=result["content"]
+                )
+                
+                if relevance_check.is_relevant and relevance_check.confidence > 0.6:
+                    result["relevance_check"] = relevance_check.model_dump()
+                    filtered_results.append(result)
+            
+            # 在相关性检查后，为每个相关文档生成摘要
+            filtered_results_with_abstract = []
+            for result in filtered_results:
+                abstract_result = await self.chunk_abstracter.create_abstract(
+                    query=params["keyword"],
+                    chunk_content=result["content"],
+                    max_length=200
+                )
+                
+                result["abstract"] = abstract_result.model_dump()
+                # 使用摘要替换原始内容用于后续处理
+                result["original_content"] = result["content"]
+                result["content"] = abstract_result.abstract
+                filtered_results_with_abstract.append(result)
+            
+            # 使用摘要生成最终答案
+            if filtered_results_with_abstract:
+                answer = await self.generator.generate_answer(
+                    query=params["keyword"],
+                    relevant_docs=filtered_results_with_abstract
+                )
+                
+                # 检查答案质量
+                quality_check = await self.hallucination_checker.check_answer(
+                    query=params["keyword"],
+                    answer=answer,
+                    relevant_docs=filtered_results_with_abstract
+                )
+                
+                if not quality_check.is_valid or quality_check.confidence < 0.7:
+                    # 如果答案质量不够好，使用原始内容重新生成
+                    print("使用原始内容重新生成答案...")
+                    for result in filtered_results_with_abstract:
+                        result["content"] = result["original_content"]
+                    
+                    answer = await self.generator.generate_answer(
+                        query=params["keyword"],
+                        relevant_docs=filtered_results_with_abstract,
+                        max_length=1500
+                    )
+                    quality_check = await self.hallucination_checker.check_answer(
+                        query=params["keyword"],
+                        answer=answer,
+                        relevant_docs=filtered_results_with_abstract
+                    )
+            
+            # 生成答案
+            if filtered_results_with_abstract:
+                answer = await self.generator.generate_answer(
+                    query=params["keyword"],
+                    relevant_docs=filtered_results_with_abstract
+                )
+                
+                # 检查答案质量
+                quality_check = await self.hallucination_checker.check_answer(
+                    query=params["keyword"],
+                    answer=answer,
+                    relevant_docs=filtered_results_with_abstract
+                )
+                
+                if not quality_check.is_valid or quality_check.confidence < 0.7:
+                    # 如果答案质量不够好，尝试重新生成
+                    print("首次生成的答案质量不足，尝试重新生成...")
+                    answer = await self.generator.generate_answer(
+                        query=params["keyword"],
+                        relevant_docs=filtered_results_with_abstract,
+                        max_length=1500  # 增加长度限制以获得更详细的答案
+                    )
+                    # 再次检查质量
+                    quality_check = await self.hallucination_checker.check_answer(
+                        query=params["keyword"],
+                        answer=answer,
+                        relevant_docs=filtered_results_with_abstract
+                    )
+            else:
+                answer = "未找到相关的文档内容来回答该问题。"
+                quality_check = HallucinationCheckResult(
+                    is_valid=False,
+                    confidence=0.0,
+                    issues=["没有找到相关文档"],
+                    suggestions=["尝试使用不同的关键词搜索"]
+                )
+            
+            state["tools_output"]["result"] = {
+                "original_count": len(results),
+                "filtered_count": len(filtered_results_with_abstract),
+                "filtered_results": filtered_results_with_abstract,
+                "generated_answer": answer,
+                "quality_check": quality_check.model_dump()
+            }
+            return state
+            
+        except Exception as e:
+            print(f"ArxivAgent处理出错: {str(e)}")
+            state["tools_output"]["result"] = {
+                "original_count": 0,
+                "filtered_count": 0,
+                "filtered_results": [],
+                "generated_answer": f"处理过程中发生错误: {str(e)}",
+                "quality_check": None,
+                "error": str(e)
+            }
+            return state
+
+class ResultFormatter:
+    def __init__(self):
+        self.llm = LLMConfig.create_llm()
+        self.system_prompt = """你是一个结果格式化助手。请将检索和生成结果转换为用户友好的格式。
+        
+格式要求：
+1. 首先展示生成的答案
+2. 如果有质量问题，说明具体问题和建议
+3. 然后简要说明检索和过滤的统计信息
+4. 保持简洁清晰"""
+        
+    async def invoke(self, state: AgentState) -> AgentState:
+        result = state["tools_output"]["result"]
+        quality_check = result.get("quality_check", {})
+        
+        messages = [
+            {"role": "system", "content": self.system_prompt},
+            {"role": "user", "content": f"""
+生成的答案：
+{result.get('generated_answer', '未生成答案')}
+
+答案质量检查：
+- 有效性: {quality_check.get('is_valid', False)}
+- 置信度: {quality_check.get('confidence', 0.0)}
+- 发现的问题: {', '.join(quality_check.get('issues', []))}
+- 改进建议: {', '.join(quality_check.get('suggestions', []))}
+
+检索统计：
+- 原始检索结果数量：{result['original_count']}
+- 相关性过滤后数量：{result['filtered_count']}
+
+请将以上信息转换为用户友好的格式。"""}
+        ]
+        
+        response = await self.llm.ainvoke(messages)
+        state["final_answer"] = response.content
+        return state
+
+# 6. 工作流定义
+def create_workflow() -> Graph:
+    workflow = StateGraph(AgentState)
+    
+    # 初始化代理
+    master = MasterAgent()
+    calculator = CalculatorAgent()
+    arxiv = ArxivAgent()
+    formatter = ResultFormatter()
+    
+    # 添加节点
+    workflow.add_node("master", master.invoke)
+    
+    
+    workflow.add_node("calculator_agent", calculator.invoke)
+    workflow.add_node("arxiv_agent", arxiv.invoke)
+    workflow.add_node("result_formatter", formatter.invoke)
+    
+    # 定义条件路由函数
+    def router(state: AgentState) -> bool:
+        if state["next_agent"]:
+            return state["next_agent"]
+        else:
+            return 'end'
+    
+    
+    # 添加条件边
+    workflow.add_conditional_edges(
+        "master",router,
+        {
+            'calculator_agent': "calculator_agent",
+            'arxiv_agent': "arxiv_agent",
+            'end': END
+        }
+    )
+    
+    
+
+    workflow.add_edge(
+        "calculator_agent",
+        "result_formatter",
+    )
+    
+    workflow.add_edge(
+        "arxiv_agent",
+        "result_formatter",
+    )
+    
+    workflow.add_edge(
+        "result_formatter",
+        END
+    )
+    
+    workflow.set_entry_point("master")
+    
+    return workflow.compile()
+
+# 7. 主函数
+async def main():
+    workflow = create_workflow()
+    
+    queries = [
+        # "请帮我计算 123 加 456",
+        "请帮我搜索关于 transformer architecture 的最新论文",
+        # '慈禧太后是什么人',
+    ]
+    
+    for query in queries:
+        print(f"\n用户: {query}")
+        state = AgentState(
+            messages=[HumanMessage(content=query)],
+            current_agent="master",
+            next_agent=None,
+            final_answer=None,
+            tools_output={}
+        )
+        
+        try:
+            result = await workflow.ainvoke(state)
+            print(f"助手: {result['final_answer']}")
+        except Exception as e:
+            print(f"错误: {str(e)}")
+
+if __name__ == "__main__":
+    asyncio.run(main())

@@ -10,3 +10,10 @@ pydantic
 httpx
 pydantic-core
 chromadb
+rank_bm25
+sentence-transformers
+networkx
+nltk
+numpy
+sklearn
+datasketch

@@ -1,23 +1,26 @@
+import os
+
+# 设置环境变量来控制线程数
+os.environ["OMP_NUM_THREADS"] = "4"
+os.environ["OPENBLAS_NUM_THREADS"] = "4"
+os.environ["MKL_NUM_THREADS"] = "4"
+os.environ["VECLIB_MAXIMUM_THREADS"] = "4"
+os.environ["NUMEXPR_NUM_THREADS"] = "4"
+
 from abc import ABC, abstractmethod
-from typing import Annotated, Any, Dict, List, Optional, Sequence, TypedDict
+from typing import Annotated, Any, Dict, List, Optional, Sequence, TypedDict, Union
 
 import operator
 from enum import Enum
-import arxiv
-import httpx
 import json
-import asyncio
 from langchain_core.messages import BaseMessage, HumanMessage, AIMessage
-from langchain_openai import ChatOpenAI
-from langgraph.graph import Graph, StateGraph,END
-from langgraph.prebuilt import ToolExecutor
 from pydantic import BaseModel, Field
 
-from prompt import prompt_master
-from utils import WebContentExtractor
 from logging_config import log_tool_usage
-from text_chunker import TextChunker
-from tools import ArxivTool, CalculatorTool, WebSearchTool
+from tools import ArxivTool, CalculatorTool, WebSearchTool,LLMConfig,GeneratorTool
+from tools import HallucinationCheckTool,ChunkAbstractTool
+from tools import HallucinationCheckResult
+from utils import LLMConfig
 from prompt import prompt_master
 MASTER_PROMPT = prompt_master
 
@@ -39,29 +42,26 @@ class AgentDecision(BaseModel):
     params: CalculatorParams | SearchParams
 
 
-
-
 # 2. 状态定义
+class SearchResult(TypedDict):
+    original_count: int
+    filtered_count: int
+    filtered_results: List[Dict[str, Any]]
+    generated_answer: str
+    quality_check: Dict[str, Any]
+
+class ToolsOutput(TypedDict):
+    result: Union[SearchResult, Any]  # 可以是SearchResult或其他工具的结果
+    params: Optional[Dict[str, Any]]
+
 class AgentState(TypedDict):
     messages: Annotated[Sequence[BaseMessage], operator.add]
     current_agent: str
     next_agent: Optional[str]
     final_answer: Optional[str]
-    tools_output: Dict[str, Any]
+    tools_output: ToolsOutput
 
 
-
-# 4. 添加 LLM 配置类
-class LLMConfig:
-    @staticmethod
-    def create_llm() -> ChatOpenAI:
-        return ChatOpenAI(
-            model='deepseek-chat', 
-            openai_api_key='sk-9693411e1fcb4176ab62ed97f98c68f3', 
-            openai_api_base='https://api.deepseek.com',
-            temperature=0,
-            max_tokens=4096,
-        )
 
 
 # 添加基础Agent类
@@ -152,6 +152,11 @@ class WebSearchAgent(DeepSeekAgent):
     def __init__(self):
         super().__init__()
         self.tool = WebSearchTool()
+        # self.relevance_checker = RelevanceCheckTool()
+        self.generator = GeneratorTool()
+        self.hallucination_checker = HallucinationCheckTool()
+        self.chunk_abstracter = ChunkAbstractTool()
+        self.max_results = 10
     
 
     @log_tool_usage
@@ -196,12 +201,88 @@ class WebSearchAgent(DeepSeekAgent):
         for kp in sorted(keypoints, key=lambda x: x.importance, reverse=True):
             results = await self.tool.search(
                 query=kp.point,
-                max_results=1  # 每个关键点最多5个结果
+                max_results=self.max_results  # 每个关键点最多5个结果
             )
             all_results.extend(results)
             
+            results = all_results
+            
+            # # 相关性检查
+            # filtered_results = []
+            # for result in results:
+            #     relevance_check = await self.relevance_checker.check_relevance(
+            #         query=state["messages"],
+            #         document=result["content"]
+            #     )
+            
+            #     if relevance_check.is_relevant and relevance_check.confidence > 0.6:
+            #         result["relevance_check"] = relevance_check.model_dump()
+            #         filtered_results.append(result)
+            
+            # # 在相关性检查后，为每个相关文档生成摘要
+            # filtered_results_with_abstract = []
+            # for result in filtered_results:
+            #     abstract_result = await self.chunk_abstracter.create_abstract(
+            #         query=state["messages"],
+            #         chunk_content=result["content"],
+            #         max_length=200
+            #     )
+            
+            #     result["abstract"] = abstract_result.model_dump()
+            #     # 使用摘要替换原始内容用于后续处理
+            #     result["original_content"] = result["content"]
+            #     result["content"] = abstract_result.abstract
+            #     filtered_results_with_abstract.append(result)
+            
+            
+            
+            # 生成答案
+            if all_results:
+                answer = await self.generator.generate_answer(
+                    query=state["messages"],
+                    relevant_docs=all_results
+                )
+                
+                # 检查答案质量
+                quality_check = await self.hallucination_checker.check_answer(
+                    query=state["messages"],
+                    answer=answer,
+                    relevant_docs=all_results
+                )
+                
+                if not quality_check.is_valid or quality_check.confidence < 0.7:
+                    # 如果答案质量不够好，尝试重新生成
+                    print("首次生成的答案质量不足，尝试重新生成...")
+                    answer = await self.generator.generate_answer(
+                        query=state["messages"],
+                        relevant_docs=all_results,
+                        max_length=1500  # 增加长度限制以获得更详细的答案
+                    )
+                    # 再次检查质量
+                    quality_check = await self.hallucination_checker.check_answer(
+                        query=state["messages"],
+                        answer=answer,
+                        relevant_docs=all_results
+                    )
+            else:
+                answer = "未找到相关的文档内容来回答该问题。"
+                quality_check = HallucinationCheckResult(
+                    is_valid=False,
+                    confidence=0.0,
+                    issues=["没有找到相关文档"],
+                    suggestions=["尝试使用不同的关键词搜索"]
+                )
+
+
         # 更新state
-        state["tools_output"]["result"] = all_results[:10]  # 最多返回10个结果
+        state["tools_output"]["result"] = {
+                "original_count": len(results),
+                "filtered_count": len(all_results),
+                "filtered_results": all_results,
+                "generated_answer": answer,
+                "quality_check": quality_check.model_dump()
+            }
+        
         state["next_agent"] = 'websearch_agent'  # 搜索完成后结束
         
         return state
@@ -223,3 +304,4 @@ class ResultFormatter(DeepSeekAgent):
         state["final_answer"] = response.content
         return state
     
+
