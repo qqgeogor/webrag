@@ -33,6 +33,7 @@ class SemanticChunk(BaseModel):
     end_idx: int
     coherence_score: float
     sentences: List[str]
+    url: str
 
 class SemanticChunkerTool:
     def __init__(
@@ -79,7 +80,8 @@ class SemanticChunkerTool:
 
     async def chunk_by_semantic_similarity(
         self,
-        text: str
+        text: str,
+        url: str
     ) -> List[SemanticChunk]:
         """基于语义相似度的动态分块"""
         sentences = self._split_into_sentences(text)
@@ -95,6 +97,23 @@ class SemanticChunkerTool:
             distance_threshold=0.5,
             linkage='ward'
         )
+
+        
+        # 重塑embeddings为2D数组
+        embeddings = embeddings.reshape(-1, embeddings.shape[-1])
+        
+        # 检查embeddings维度
+        if len(embeddings.shape) == 1:
+            # 如果只有一个句子,直接返回单个chunk
+            return [SemanticChunk(
+                content=text,
+                start_idx=0,
+                end_idx=1,
+                coherence_score=1.0,
+                sentences=sentences,
+                url=url
+            )]
+            
         clusters = clustering.fit_predict(embeddings)
         
         # 根据聚类结果生成chunks
@@ -122,7 +141,8 @@ class SemanticChunkerTool:
                     start_idx=current_start,
                     end_idx=i + 1,
                     coherence_score=coherence,
-                    sentences=current_chunk
+                    sentences=current_chunk,
+                    url=url
                 ))
                 
                 current_chunk = []
@@ -141,7 +161,8 @@ class SemanticChunkerTool:
                 start_idx=current_start,
                 end_idx=len(sentences),
                 coherence_score=coherence,
-                sentences=current_chunk
+                sentences=current_chunk,
+                url=url
             ))
         
         return chunks
@@ -203,7 +224,8 @@ class SemanticChunkerTool:
                     start_idx=community[0],
                     end_idx=community[-1] + 1,
                     coherence_score=coherence,
-                    sentences=community_sentences
+                    sentences=community_sentences,
+                    url=url
                 ))
         
         return sorted(chunks, key=lambda x: x.start_idx)
@@ -235,7 +257,8 @@ class SemanticChunkerTool:
                     start_idx=current_start,
                     end_idx=i + 1,
                     coherence_score=coherence,
-                    sentences=current_chunk
+                    sentences=current_chunk,
+                    url=url
                 ))
                 
                 current_chunk = []
@@ -255,7 +278,8 @@ class SemanticChunkerTool:
                 start_idx=current_start,
                 end_idx=len(sentences),
                 coherence_score=coherence,
-                sentences=current_chunk
+                sentences=current_chunk,
+                url=url
             ))
         
         return chunks
@@ -283,15 +307,15 @@ class ArxivTool:
         )
 
         papers = []
-        async with httpx.AsyncClient() as http_client:
-            for result in client.results(search):
-                paper = PaperInfo(
-                    title=result.title,
-                    abstract=result.summary,
-                    pdf_url=result.pdf_url,
-                    authors=[author.name for author in result.authors]
-                )
-                papers.append(paper)
+        for result in client.results(search):
+            paper = PaperInfo(
+                title=result.title,
+                abstract=result.summary,
+                pdf_url=result.pdf_url,
+                authors=[author.name for author in result.authors]
+            )
+            papers.append(paper)
+
         return papers
 
 class CalculatorTool:
@@ -307,7 +331,8 @@ class HybridSearch:
     def __init__(self,chroma_client,collection,embedding_model=None):
         self.chroma_client = chroma_client
         self.collection = collection
-        
+        self.min_results = 3  # 最少期望结果数
+        self.initial_threshold = 0.7  # 初始相似度阈值
         
         if embedding_model is None:
             model_name = 'all-MiniLM-L6-v2'
@@ -398,9 +423,25 @@ class HybridSearch:
                     })
                     seen_docs.add(doc_id)
             
-            # 按最终分数排序
+            # 对所有候选结果排序
             combined_results.sort(key=lambda x: x["score"], reverse=True)
+            
+            # 动态调整阈值以获得合适数量的结果
+            threshold = self.initial_threshold
+            while threshold > 0:
+                filtered_results = [
+                    r for r in combined_results 
+                    if r["score"] >= threshold
+                ]
+                
+                if len(filtered_results) >= self.min_results:
+                    return filtered_results[:top_k]
+                    
+                threshold -= 0.1  # 大幅降低阈值
+            
+            # 如果仍然没有足够的结果，返回所有可用结果
             return combined_results[:top_k]
+        
             
         except Exception as e:
             print(f"检索过程中出错: {str(e)}")
@@ -446,8 +487,8 @@ class WebSearchTool:
                 response.raise_for_status()
                 content = await self.extractor.extract_content(response.text)
                 
-            # 使用 SemanticChunker 进行分块
-            chunks = await self.semantic_chunker.chunk_by_semantic_similarity(content)
+            # 使用 SemanticChunker 进行分块，传入URL
+            chunks = await self.semantic_chunker.chunk_by_semantic_similarity(content, url)
             
             # 存储到 ChromaDB
             documents = []
@@ -475,7 +516,7 @@ class WebSearchTool:
                     embeddings=embeddings
                 )
             
-            return [{"id": id, "content": doc, "metadata": meta} 
+            return [{"id": id, "content": doc, "metadata": meta, "url": url} 
                    for id, doc, meta in zip(ids, documents, metadatas)]
                    
         except Exception as e:
@@ -505,20 +546,26 @@ class WebSearchTool:
             if response.status_code != 200:
                 raise Exception(f"搜索API调用失败: {response.text}")
                 
-            data = response.json()
-            organic_results = data.get("organic", [])
+        data = response.json()
+        organic_results = data.get("organic", [])
+        
+        for result in organic_results[:max_results]:
+            chunks = await self.fetch_and_process_content(
+                result.get("link", ""),
+                result.get("title", "")
+            )
             
-            for result in organic_results[:max_results]:
-                chunks = await self.fetch_and_process_content(
-                    result.get("link", ""),
-                    result.get("title", "")
-                )
-                
-                if chunks:
-                    results.extend(chunks)
-            
-            results = await self.hybrid_search.hybrid_search(query,max_results)
-            return results
+            if chunks:
+                results.extend(chunks)
+        
+        results = await self.hybrid_search.hybrid_search(query,max_results)
+        
+        # 确保每个结果都包含URL
+        for result in results:
+            if "url" not in result:
+                result["url"] = result.get("metadata", {}).get("url", "无可用URL")
+        
+        return results
     
     async def query_similar_content(
         self,

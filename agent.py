@@ -16,11 +16,14 @@ from enum import Enum
 import json
 from langchain_core.messages import BaseMessage, HumanMessage, AIMessage
 from pydantic import BaseModel, Field
+from itertools import islice
+import asyncio
 
 from logging_config import log_tool_usage
 from tools import ArxivTool, CalculatorTool, WebSearchTool,LLMConfig,GeneratorTool,RelevanceCheckTool
 from tools import HallucinationCheckTool,ChunkAbstractTool
 from tools import HallucinationCheckResult
+from evaluation import RagasEvaluator
 from utils import LLMConfig
 from prompt import prompt_master
 MASTER_PROMPT = prompt_master
@@ -157,8 +160,12 @@ class WebSearchAgent(DeepSeekAgent):
         self.generator = GeneratorTool()
         self.hallucination_checker = HallucinationCheckTool()
         self.chunk_abstracter = ChunkAbstractTool()
-        self.max_results = 10
+        self.max_results = 5
         self.similarity_threshold = 0.75  # 相似度阈值
+        self.max_concurrent = 5  # 最大并发数
+        self.semaphore = asyncio.Semaphore(self.max_concurrent)
+        self.search_semaphore = asyncio.Semaphore(self.max_concurrent)
+        self.ragas_evaluator = RagasEvaluator()
 
     @log_tool_usage
     async def extract_keypoints(self, query: str) -> List[KeyPoint]:
@@ -215,8 +222,6 @@ class WebSearchAgent(DeepSeekAgent):
         similarity = same_count / num_perm
         
         return similarity
-    
-    
 
     async def merge_similar_keypoints(self, keypoints: List[KeyPoint]) -> List[KeyPoint]:
         """合并相似的关键点"""
@@ -258,6 +263,85 @@ class WebSearchAgent(DeepSeekAgent):
         return merged_points
 
     @log_tool_usage
+    async def check_single_relevance(self, query: str, result: dict) -> Optional[dict]:
+        """检查单个文档的相关性"""
+        async with self.semaphore:  # 使用信号量控制并发
+            try:
+                relevance_check = await self.relevance_checker.check_relevance(
+                    query=query,
+                    document=result["content"]
+                )
+                
+                if relevance_check.is_relevant and relevance_check.confidence > 0.6:
+                    result["relevance_check"] = relevance_check.model_dump()
+                    return result
+                return None
+            except Exception as e:
+                print(f"Error checking relevance: {e}")
+                return None
+    
+    async def batch_check_relevance(self, query: str, results: List[dict], batch_size: int = 20) -> List[dict]:
+        """批量检查文档相关性"""
+        filtered_results = []
+        
+        # 将结果分批处理
+        for i in range(0, len(results), batch_size):
+            batch = list(islice(results, i, i + batch_size))
+            
+            # 创建当前批次的任务
+            tasks = [
+                self.check_single_relevance(query, result)
+                for result in batch
+            ]
+            
+            # 并发执行当前批次的任务
+            batch_results = await asyncio.gather(*tasks)
+            
+            # 过滤掉None结果
+            filtered_results.extend([r for r in batch_results if r is not None])
+            
+        return filtered_results
+    
+    @log_tool_usage
+    async def search_single_keypoint(self, keypoint: KeyPoint) -> List[dict]:
+        """搜索单个关键点"""
+        async with self.search_semaphore:
+            try:
+                results = await self.tool.search(
+                    query=keypoint.point,
+                    max_results=self.max_results
+                )
+                # 添加重要性信息到结果中，方便后续处理
+                for result in results:
+                    result['importance'] = keypoint.importance
+                return results
+            except Exception as e:
+                print(f"Error searching for keypoint {keypoint.point}: {e}")
+                return []
+
+    async def parallel_search(self, keypoints: List[KeyPoint]) -> List[dict]:
+        """并行执行多个关键点的搜索"""
+        # 按重要性排序关键点
+        sorted_keypoints = sorted(keypoints, key=lambda x: x.importance, reverse=True)
+        
+        # 创建搜索任务
+        search_tasks = [
+            self.search_single_keypoint(kp)
+            for kp in sorted_keypoints
+        ]
+        
+        # 并行执行搜索
+        results_list = await asyncio.gather(*search_tasks)
+        
+        # 合并结果，保持重要性顺序
+        all_results = []
+        for results in results_list:
+            all_results.extend(results)
+            
+        return all_results
+    
+
+    @log_tool_usage
     async def invoke(self, state: AgentState) -> AgentState:
         # 从state中获取messages
         messages = state["messages"]
@@ -273,46 +357,29 @@ class WebSearchAgent(DeepSeekAgent):
         keypoints = await self.extract_keypoints(query)
         merged_keypoints = await self.merge_similar_keypoints(keypoints)
         
-        
-                
-
-
-        # 使用合并后的关键点进行搜索
-        all_results = []
-        for kp in sorted(merged_keypoints, key=lambda x: x.importance, reverse=True):
-            results = await self.tool.search(
-                query=kp.point,
-                max_results=self.max_results
-            )
-            all_results.extend(results)
+        # 并行执行搜索
+        all_results = await self.parallel_search(merged_keypoints)
         
 
         # 相关性检查
-        filtered_results = []
-        for result in all_results:
-            relevance_check = await self.relevance_checker.check_relevance(
-                query=query,
-                document=result["content"]
-            )
-            
-            if relevance_check.is_relevant and relevance_check.confidence > 0.6:
-                result["relevance_check"] = relevance_check.model_dump()
-                filtered_results.append(result)
+        filtered_results = await self.batch_check_relevance(
+            query=query,
+            results=all_results,
+            batch_size=20  # 每批处理20个文档
+        )
 
-        all_results = filtered_results
-                
         # 生成答案
-        if all_results:
+        if filtered_results:
             answer = await self.generator.generate_answer(
                 query=state["messages"],
-                relevant_docs=all_results
+                relevant_docs=filtered_results
             )
             
             # 检查答案质量
             quality_check = await self.hallucination_checker.check_answer(
                 query=state["messages"],
                 answer=answer,
-                relevant_docs=all_results
+                relevant_docs=filtered_results
             )
             
             if not quality_check.is_valid or quality_check.confidence < 0.7:
@@ -320,14 +387,14 @@ class WebSearchAgent(DeepSeekAgent):
                 print("首次生成的答案质量不足，尝试重新生成...")
                 answer = await self.generator.generate_answer(
                     query=state["messages"],
-                    relevant_docs=all_results,
+                    relevant_docs=filtered_results,
                     max_length=1500  # 增加长度限制以获得更详细的答案
                 )
                 # 再次检查质量
                 quality_check = await self.hallucination_checker.check_answer(
                     query=state["messages"],
                     answer=answer,
-                    relevant_docs=all_results
+                    relevant_docs=filtered_results
                 )
         else:
             answer = "未找到相关的文档内容来回答该问题。"
@@ -338,18 +405,39 @@ class WebSearchAgent(DeepSeekAgent):
                 suggestions=["尝试使用不同的关键词搜索"]
             )
 
+        # 更新 state 时添加 url
+        filtered_results_with_urls = []
+        for result in filtered_results:
+            result_with_url = {
+                "content": result["content"],
+                "url": result["url"],  # 添加 URL
+                "relevance_check": result.get("relevance_check", {}),
+                "importance": result.get("importance", 1)
+            }
+            filtered_results_with_urls.append(result_with_url)
 
-        # 更新state
+        # 更新 state
         state["tools_output"]["result"] = {
-                "original_count": len(results),
-                "filtered_count": len(all_results),
-                "filtered_results": all_results,
+                "original_count": len(all_results),
+                "filtered_count": len(filtered_results),
+                "filtered_results": filtered_results_with_urls,  # 使用包含 URL 的结果
                 "generated_answer": answer,
                 "quality_check": quality_check.model_dump()
             }
         
-        state["next_agent"] = 'websearch_agent'  # 搜索完成后结束
+
+        # # 评估答案
+        # eval_result = await self.ragas_evaluator.evaluate(
+        #     question=query,
+        #     answer=answer,
+        #     contexts=filtered_results_with_urls
+        # )
+
+        # state["eval_result"] = eval_result
+
         
+        state["next_agent"] = 'websearch_agent'
+        state["final_answer"] = answer
         return state
     
 
@@ -366,7 +454,7 @@ class ResultFormatter(DeepSeekAgent):
         ]
         
         response = await self.llm.ainvoke(messages)
-        state["final_answer"] = state["final_answer"]+"\n"+response.content
+        state["final_answer"] = response.content
         return state
     
     
