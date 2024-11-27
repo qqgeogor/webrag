@@ -359,7 +359,18 @@ class WebSearchAgent(DeepSeekAgent):
         
         # 并行执行搜索
         all_results = await self.parallel_search(merged_keypoints)
-        
+            
+        # 根据 URL 去重
+        unique_results = {}
+        for result in all_results:
+            url = result.get("url")
+            if url and url not in unique_results:
+                unique_results[url] = result
+
+        # 将去重后的结果转换为列表
+        all_results = list(unique_results.values())
+
+
 
         # 相关性检查
         filtered_results = await self.batch_check_relevance(
@@ -435,7 +446,7 @@ class WebSearchAgent(DeepSeekAgent):
 
         # state["eval_result"] = eval_result
 
-        
+
         state["next_agent"] = 'websearch_agent'
         state["final_answer"] = answer
         return state

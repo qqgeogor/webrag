@@ -5,18 +5,11 @@ os.environ['HF_ENDPOINT'] = 'https://hf-mirror.com'
 from abc import ABC, abstractmethod
 from typing import Annotated, Any, Dict, List, Optional, Sequence, TypedDict
 
-from enum import Enum
-
 import asyncio
-from langchain_core.messages import BaseMessage, HumanMessage, AIMessage
-from langchain_openai import ChatOpenAI
+from langchain_core.messages import HumanMessage
 from langgraph.graph import Graph, StateGraph,END
-from langgraph.prebuilt import ToolExecutor
-from pydantic import BaseModel, Field
 
-from utils import WebContentExtractor
-from logging_config import log_tool_usage
-from text_chunker import TextChunker
+
 from agent import WebSearchAgent, CalculatorAgent, ArxivAgent, MasterAgent,AgentState,ResultFormatter
 import gradio as gr
 
@@ -35,10 +28,6 @@ def create_workflow() -> Graph:
     # 添加节点
     workflow.add_node("master", master.invoke)
     
-    # workflow.add_edge(
-    #     "master",
-    #     END
-    # )
 
     
     workflow.add_node("websearch_agent", websearch.invoke)
