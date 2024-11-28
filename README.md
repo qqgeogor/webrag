@@ -57,7 +57,6 @@ python tools_agent.py
 
 ### agent.py
     - using agent to chain the tools
-    - using langchain to chain the tools
     - using prompt to control the agent 
     - using logging to record the tool usage
 
