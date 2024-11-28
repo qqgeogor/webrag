@@ -97,13 +97,13 @@ class SemanticChunkerTool:
             distance_threshold=0.5,
             linkage='ward'
         )
-
+        
         
         # 重塑embeddings为2D数组
         embeddings = embeddings.reshape(-1, embeddings.shape[-1])
         
         # 检查embeddings维度
-        if len(embeddings.shape) == 1:
+        if len(embeddings.shape) <= 1:
             # 如果只有一个句子,直接返回单个chunk
             return [SemanticChunk(
                 content=text,

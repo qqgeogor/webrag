@@ -8,10 +8,12 @@ from typing import Annotated, Any, Dict, List, Optional, Sequence, TypedDict
 import asyncio
 from langchain_core.messages import HumanMessage
 from langgraph.graph import Graph, StateGraph,END
+import gradio as gr
 
 
 from agent import WebSearchAgent, CalculatorAgent, ArxivAgent, MasterAgent,AgentState,ResultFormatter
-import gradio as gr
+from evaluation import RagasEvaluator  # 假设源代码在 src 目录下
+
 
 
 # 6. 工作流定义
@@ -138,10 +140,43 @@ def main():
 - 结果质量评分: {tools_output.get('quality_check', {}).get('score', 'N/A')}
             """
             
+            # 提取上下文内容
+            contexts = []
+            try:
+                for fr in filtered_results:
+                    if isinstance(fr.get('content'), str):
+                        contexts.append(fr['content'])
+                    elif isinstance(fr.get('content'), dict):
+                        contexts.append(str(fr['content']))  # 转换字典为字符串
+                    else:
+                        contexts.append('')  # 如果无法获取内容，添加空字符串
+            except Exception as e:
+                contexts = ['']  # 确保至少有一个空上下文
+            
+            # 评估结果
+            try:
+                evaluator = RagasEvaluator()
+                eval_result = await evaluator.evaluate_single(
+                    question=query,
+                    answer=result['final_answer'],
+                    contexts=contexts,
+                    reference='N/A',
+                )
+                
+                formatted_eval_result = evaluator.format_for_gradio(eval_result)
+            except Exception as e:
+                formatted_eval_result = {
+                    "error": f"评估过程出错: {str(e)}",
+                    "scores": {},
+                    "contexts": contexts,
+                    "reference": 'N/A'
+                }
+            
             return (
                 result['final_answer'],  # 主要回答
                 table_data,              # 搜索结果表格
-                stats                    # 统计信息
+                stats,                   # 统计信息
+                formatted_eval_result    # 评估结果
             )
             
         except Exception as e:
@@ -186,15 +221,19 @@ def main():
                     stats_output = gr.Markdown(
                         label="统计信息"
                     )
+                    
+                # 添加评估结果展示
+                with gr.Accordion("评估结果", open=False):
+                    eval_output = gr.JSON(label="质量评估")
 
-        # 设置提交事件
+        # 更新提交事件的输出
         submit_btn.click(
             fn=gradio_interface,
             inputs=[query_input],
-            outputs=[answer_output, results_output, stats_output]
+            outputs=[answer_output, results_output, stats_output, eval_output]
         )
         
-        # 修改示例添加方式
+        # 更新示例输出
         gr.Examples(
             examples=[
                 ["请帮我计算 123 加 456"],
@@ -204,7 +243,7 @@ def main():
                 ['我需要自己做河豚鱼刺身，具体应该怎么做，有什么步骤和重点注意']
             ],
             inputs=query_input,
-            outputs=[answer_output, results_output, stats_output]
+            outputs=[answer_output, results_output, stats_output, eval_output]
         )
         
         # 修改 launch() 调用，移除 examples 参数
