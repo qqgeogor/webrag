@@ -350,7 +350,7 @@ class HybridSearch:
     @property
     def collection(self):
         return self._get_collection()   
-    
+
     def _get_chroma_client(self):
         return self._chroma_client
     
@@ -550,7 +550,8 @@ class WebSearchTool:
     async def search(self, query: str, max_results: int = 5) -> List[dict]:
         headers = {
             "X-API-KEY": self.api_key,
-            "Content-Type": "application/json"
+            "Content-Type": "application/json",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.3"
         }
         
         payload = {

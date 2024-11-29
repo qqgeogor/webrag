@@ -81,9 +81,15 @@ class BaseAgent(ABC):
 class DeepSeekAgent(BaseAgent):
     
     def __init__(self):
-        self.llm = LLMConfig.create_llm()
+        self._llm = LLMConfig.create_llm()
 
-
+    def _get_llm(self):
+        return self._llm
+    
+    @property
+    def llm(self):
+        return self._get_llm()  
+    
     async def invoke(self, state: AgentState) -> AgentState:
         pass
 
@@ -376,7 +382,7 @@ class WebSearchAgent(DeepSeekAgent):
             results=all_results,
             batch_size=2  # 每批处理20个文档
         )
-        
+
         # 生成答案
         if filtered_results:
             answer = await self.generator.generate_answer(

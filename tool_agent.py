@@ -102,7 +102,6 @@ async def process_query(query: str) -> str:
 
 # 添加 Gradio 接口处理函数
 def gradio_interface(query: str) -> str:
-    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
     return asyncio.run(process_query(query))
 
 # 主函数改为启动 Gradio
@@ -249,7 +248,6 @@ def main():
                 ["请帮我搜索关于 transformer architecture 的最新论文，并提供摘要"],
                 ['怎么样才能做出好吃的蛋炒饭'],
                 ['我需要自己做河豚鱼刺身，具体应该怎么做，有什么步骤和重点注意'],
-                ['请帮我搜索关于 2024 年 11 月 29 日 的 新闻，并提供摘要'],
                 ['学习python要准备一些什么工作'],
             ],
             inputs=query_input,
