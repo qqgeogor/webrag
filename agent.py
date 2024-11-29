@@ -261,7 +261,7 @@ class WebSearchAgent(DeepSeekAgent):
                 merged_points.append(kp1)
 
         return merged_points
-    
+
     @log_tool_usage
     async def check_single_relevance(self, query: str, result: dict) -> Optional[dict]:
         """检查单个文档的相关性"""
@@ -369,16 +369,14 @@ class WebSearchAgent(DeepSeekAgent):
 
         # 将去重后的结果转换为列表
         all_results = list(unique_results.values())
-
-
-
+        
         # 相关性检查
         filtered_results = await self.batch_check_relevance(
             query=query,
             results=all_results,
-            batch_size=20  # 每批处理20个文档
+            batch_size=2  # 每批处理20个文档
         )
-
+        
         # 生成答案
         if filtered_results:
             answer = await self.generator.generate_answer(
