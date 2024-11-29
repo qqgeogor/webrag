@@ -163,8 +163,8 @@ class WebSearchAgent(DeepSeekAgent):
         self.max_results = 5
         self.similarity_threshold = 0.75  # 相似度阈值
         self.max_concurrent = 16  # 最大并发数
-        self.semaphore = asyncio.Semaphore(self.max_concurrent)
-        self.search_semaphore = asyncio.Semaphore(self.max_concurrent)
+        # self.semaphore = asyncio.Semaphore(self.max_concurrent)
+        # self.search_semaphore = asyncio.Semaphore(self.max_concurrent)
         self.ragas_evaluator = RagasEvaluator()
 
     @log_tool_usage
@@ -261,24 +261,24 @@ class WebSearchAgent(DeepSeekAgent):
                 merged_points.append(kp1)
 
         return merged_points
-
+    
     @log_tool_usage
     async def check_single_relevance(self, query: str, result: dict) -> Optional[dict]:
         """检查单个文档的相关性"""
-        async with self.semaphore:  # 使用信号量控制并发
-            try:
-                relevance_check = await self.relevance_checker.check_relevance(
-                    query=query,
-                    document=result["content"]
-                )
-                
-                if relevance_check.is_relevant and relevance_check.confidence > 0.6:
-                    result["relevance_check"] = relevance_check.model_dump()
-                    return result
-                return None
-            except Exception as e:
-                print(f"Error checking relevance: {e}")
-                return None
+        # async with self.semaphore:  # 使用信号量控制并发
+        try:
+            relevance_check = await self.relevance_checker.check_relevance(
+                query=query,
+                document=result["content"]
+            )
+            
+            if relevance_check.is_relevant and relevance_check.confidence > 0.6:
+                result["relevance_check"] = relevance_check.model_dump()
+                return result
+            return None
+        except Exception as e:
+            print(f"Error checking relevance: {e}")
+            return None
     
     async def batch_check_relevance(self, query: str, results: List[dict], batch_size: int = 20) -> List[dict]:
         """批量检查文档相关性"""
@@ -305,19 +305,19 @@ class WebSearchAgent(DeepSeekAgent):
     @log_tool_usage
     async def search_single_keypoint(self, keypoint: KeyPoint) -> List[dict]:
         """搜索单个关键点"""
-        async with self.search_semaphore:
-            try:
-                results = await self.tool.search(
-                    query=keypoint.point,
-                    max_results=self.max_results
-                )
-                # 添加重要性信息到结果中，方便后续处理
-                for result in results:
-                    result['importance'] = keypoint.importance
-                return results
-            except Exception as e:
-                print(f"Error searching for keypoint {keypoint.point}: {e}")
-                return []
+        # async with self.search_semaphore:
+        try:
+            results = await self.tool.search(
+                query=keypoint.point,
+                max_results=self.max_results
+            )
+            # 添加重要性信息到结果中，方便后续处理
+            for result in results:
+                result['importance'] = keypoint.importance
+            return results
+        except Exception as e:
+            print(f"Error searching for keypoint {keypoint.point}: {e}")
+            return []
 
     async def parallel_search(self, keypoints: List[KeyPoint]) -> List[dict]:
         """并行执行多个关键点的搜索"""

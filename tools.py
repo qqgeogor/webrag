@@ -329,8 +329,8 @@ class CalculatorTool:
 
 class HybridSearch:
     def __init__(self,chroma_client,collection,embedding_model=None):
-        self.chroma_client = chroma_client
-        self.collection = collection
+        self._chroma_client = chroma_client
+        self._collection = collection
         self.min_results = 3  # 最少期望结果数
         self.initial_threshold = 0.7  # 初始相似度阈值
         
@@ -344,6 +344,20 @@ class HybridSearch:
         self.bm25_index = None
         self.doc_store = []  # 存储文档原文
         
+    def _get_collection(self):
+        return self._collection
+    
+    @property
+    def collection(self):
+        return self._get_collection()   
+    
+    def _get_chroma_client(self):
+        return self._chroma_client
+    
+    @property
+    def chroma_client(self):
+        return self._get_chroma_client()
+    
     def _create_bm25_index(self, documents: List[str]):
         """创建BM25索引"""
         # 对文档进行分词
@@ -545,7 +559,7 @@ class WebSearchTool:
         }
         
         results = []
-        
+
         response = await self.client.post(
             self.base_url,
             headers=headers,
