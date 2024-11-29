@@ -162,7 +162,7 @@ class WebSearchAgent(DeepSeekAgent):
         self.chunk_abstracter = ChunkAbstractTool()
         self.max_results = 5
         self.similarity_threshold = 0.75  # 相似度阈值
-        self.max_concurrent = 5  # 最大并发数
+        self.max_concurrent = 16  # 最大并发数
         self.semaphore = asyncio.Semaphore(self.max_concurrent)
         self.search_semaphore = asyncio.Semaphore(self.max_concurrent)
         self.ragas_evaluator = RagasEvaluator()
