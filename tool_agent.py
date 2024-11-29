@@ -1,6 +1,8 @@
 import os
 
 os.environ['HF_ENDPOINT'] = 'https://hf-mirror.com'
+os.environ['OPENAI_API_KEY'] = 'sk-9693411e1fcb4176ab62ed97f98c68f3'
+os.environ['OPENAI_API_BASE'] = 'https://api.deepseek.com'
 
 from abc import ABC, abstractmethod
 from typing import Annotated, Any, Dict, List, Optional, Sequence, TypedDict
@@ -100,6 +102,7 @@ async def process_query(query: str) -> str:
 
 # 添加 Gradio 接口处理函数
 def gradio_interface(query: str) -> str:
+    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
     return asyncio.run(process_query(query))
 
 # 主函数改为启动 Gradio
@@ -153,30 +156,30 @@ def main():
             except Exception as e:
                 contexts = ['']  # 确保至少有一个空上下文
             
-            # 评估结果
-            try:
-                evaluator = RagasEvaluator()
-                eval_result = await evaluator.evaluate_single(
-                    question=query,
-                    answer=result['final_answer'],
-                    contexts=contexts,
-                    reference='N/A',
-                )
+            # # 评估结果
+            # try:
+            #     evaluator = RagasEvaluator()
+            #     eval_result = await evaluator.evaluate_single(
+            #         question=query,
+            #         answer=result['final_answer'],
+            #         contexts=contexts,
+            #         reference='N/A',
+            #     )
                 
-                formatted_eval_result = evaluator.format_for_gradio(eval_result)
-            except Exception as e:
-                formatted_eval_result = {
-                    "error": f"评估过程出错: {str(e)}",
-                    "scores": {},
-                    "contexts": contexts,
-                    "reference": 'N/A'
-                }
-            
+            #     formatted_eval_result = evaluator.format_for_gradio(eval_result)
+            # except Exception as e:
+            #     formatted_eval_result = {
+            #         "error": f"评估过程出错: {str(e)}",
+            #         "scores": {},
+            #         "contexts": contexts,
+            #         "reference": 'N/A'
+            #     }
+
             return (
                 result['final_answer'],  # 主要回答
                 table_data,              # 搜索结果表格
                 stats,                   # 统计信息
-                formatted_eval_result    # 评估结果
+                # formatted_eval_result    # 评估结果
             )
             
         except Exception as e:
@@ -222,15 +225,20 @@ def main():
                         label="统计信息"
                     )
                     
-                # 添加评估结果展示
-                with gr.Accordion("评估结果", open=False):
-                    eval_output = gr.JSON(label="质量评估")
-
+                # # 添加评估结果展示
+                # with gr.Accordion("评估结果", open=False):
+                #     eval_output = gr.JSON(label="质量评估")
+                
         # 更新提交事件的输出
         submit_btn.click(
             fn=gradio_interface,
             inputs=[query_input],
-            outputs=[answer_output, results_output, stats_output, eval_output]
+            outputs=[
+                answer_output, 
+                results_output, 
+                stats_output, 
+                # eval_output
+            ]
         )
         
         # 更新示例输出
@@ -243,7 +251,12 @@ def main():
                 ['我需要自己做河豚鱼刺身，具体应该怎么做，有什么步骤和重点注意']
             ],
             inputs=query_input,
-            outputs=[answer_output, results_output, stats_output, eval_output]
+            outputs=[
+                answer_output, 
+                results_output, 
+                stats_output, 
+                # eval_output
+            ]
         )
         
         # 修改 launch() 调用，移除 examples 参数

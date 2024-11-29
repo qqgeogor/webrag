@@ -33,12 +33,15 @@ class RagasEvaluator:
     def __init__(self, api_base: str = None, api_key: str = None):
         # 配置OpenAI客户端
         llm = LLMConfig.create_llm()
-        llm_wrapper = LangchainLLMWrapper(llm)
-
+        llm_wrapper = LangchainLLMWrapper(langchain_llm=llm)
+        faithfulness = Faithfulness()
+        answer_relevancy = AnswerRelevancy()
+        faithfulness.llm = llm_wrapper
+        answer_relevancy.llm = llm_wrapper
         # 使用当前支持的metrics
         self.metrics = [
-            Faithfulness(llm=llm_wrapper),
-            AnswerRelevancy(llm=llm_wrapper),
+            faithfulness,
+            answer_relevancy,
             # ContextRecall(llm=llm),
             # ContextPrecision(llm=llm)
         ]
@@ -73,7 +76,7 @@ class RagasEvaluator:
             
             scores_dict = {
                 chinese_names.get(k, k): float(v) 
-                for k, v in scores.items()
+                for k, v in scores.items() if isinstance(scores, dict)
             }
             
             return EvalResult(

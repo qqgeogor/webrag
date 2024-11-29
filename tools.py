@@ -478,14 +478,23 @@ class WebSearchTool:
         )
         self.hybrid_search = HybridSearch(self.chroma_client,self.collection,self.embedding_model)
 
+        self._client = httpx.AsyncClient()
+
+    
+    def _get_client(self):
+        return self._client 
+    
+    @property
+    def client(self):
+        return self._get_client()   
+
     async def fetch_and_process_content(self, url: str, title: str) -> List[dict]:
         """获取网页内容并进行语义分块"""
         try:
-            # 获取原始内容
-            async with httpx.AsyncClient() as client:
-                response = await client.get(url, timeout=10.0)
-                response.raise_for_status()
-                content = await self.extractor.extract_content(response.text)
+        # 获取原始内容
+            response = await self.client.get(url, timeout=10.0)
+            response.raise_for_status()
+            content = await self.extractor.extract_content(response.text)
                 
             # 使用 SemanticChunker 进行分块，传入URL
             chunks = await self.semantic_chunker.chunk_by_semantic_similarity(content, url)
@@ -536,15 +545,15 @@ class WebSearchTool:
         }
         
         results = []
-        async with httpx.AsyncClient() as client:
-            response = await client.post(
-                self.base_url,
-                headers=headers,
-                json=payload
-            )
-            
-            if response.status_code != 200:
-                raise Exception(f"搜索API调用失败: {response.text}")
+        
+        response = await self.client.post(
+            self.base_url,
+            headers=headers,
+            json=payload
+        )
+        
+        if response.status_code != 200:
+            raise Exception(f"搜索API调用失败: {response.text}")
                 
         data = response.json()
         organic_results = data.get("organic", [])
