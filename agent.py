@@ -134,8 +134,15 @@ class CalculatorAgent(DeepSeekAgent):
     async def invoke(self, state: AgentState) -> AgentState:
         params = state["tools_output"]["params"]
         result = self.tool.add(params["a"], params["b"])
-        state["tools_output"]["result"] = result
 
+        state["tools_output"]["result"] = {
+                "original_count": 0,
+                "filtered_count": 0,
+                "filtered_results": [],  # 使用包含 URL 的结果
+                "generated_answer": result,
+                "quality_check": {}
+            }
+        
         return state
 
 class ArxivAgent(DeepSeekAgent):
@@ -150,7 +157,16 @@ class ArxivAgent(DeepSeekAgent):
             keyword=params["keyword"],
             max_results=params.get("max_results", 10)
         )
-        state["tools_output"]["result"] = papers
+        
+        # state["tools_output"]["result"] = 
+        state["tools_output"]["result"] = {
+                "original_count": 0,
+                "filtered_count": 0,
+                "filtered_results": [],  # 使用包含 URL 的结果
+                "generated_answer": papers,
+                "quality_check": {}
+            }
+        
         
         return state
     

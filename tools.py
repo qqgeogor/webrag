@@ -170,7 +170,8 @@ class SemanticChunkerTool:
 
     async def chunk_by_topic_segmentation(
         self,
-        text: str
+        text: str,
+        url: Optional[str] = None
     ) -> List[SemanticChunk]:
         """基于主题分割的动态分块"""
         sentences = self._split_into_sentences(text)
@@ -209,7 +210,8 @@ class SemanticChunkerTool:
             if len(chunk_text) > self.max_chunk_size:
                 sub_chunks = self._split_large_chunk(
                     community_sentences,
-                    embeddings[community]
+                    embeddings[community],
+                    url,
                 )
                 chunks.extend(sub_chunks)
             else:
@@ -233,7 +235,8 @@ class SemanticChunkerTool:
     def _split_large_chunk(
         self,
         sentences: List[str],
-        embeddings: np.ndarray
+        embeddings: np.ndarray,
+        url: Optional[str] = None
     ) -> List[SemanticChunk]:
         """将大块文本进行二次划分"""
         chunks = []
