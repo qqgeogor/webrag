@@ -1,0 +1,20 @@
+[MASTER]
+disable=
+    C0111, # missing-docstring
+    C0103, # invalid-name
+    C0303, # trailing-whitespace
+    C0301, # line-too-long
+    W0621, # redefined-outer-name
+    R0903, # too-few-public-methods
+    R0913, # too-many-arguments
+    W0702, # bare-except
+    W0703, # broad-except
+    R0914, # too-many-locals
+
+[FORMAT]
+max-line-length=120
+
+[REPORTS]
+output-format=colorized
+reports=no
+score=yes 

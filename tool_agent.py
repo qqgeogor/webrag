@@ -1,8 +1,13 @@
 import os
+from dotenv import load_dotenv
 
-os.environ['HF_ENDPOINT'] = 'https://hf-mirror.com'
-os.environ['OPENAI_API_KEY'] = 'sk-9693411e1fcb4176ab62ed97f98c68f3'
-os.environ['OPENAI_API_BASE'] = 'https://api.deepseek.com'
+# 加载环境变量
+load_dotenv()
+
+# 使用环境变量
+os.environ.setdefault('HF_ENDPOINT', 'https://hf-mirror.com')
+os.environ.setdefault('OPENAI_API_KEY', 'sk-9693411e1fcb4176ab62ed97f98c68f3')
+os.environ.setdefault('OPENAI_API_BASE', 'https://api.deepseek.com')
 
 from abc import ABC, abstractmethod
 from typing import Annotated, Any, Dict, List, Optional, Sequence, TypedDict
@@ -32,7 +37,7 @@ def create_workflow() -> Graph:
     # 添加节点
     workflow.add_node("master", master.invoke)
     
-
+    
     
     workflow.add_node("websearch_agent", websearch.invoke)
     workflow.add_node("calculator_agent", calculator.invoke)

@@ -1,0 +1,62 @@
+[tool.poetry]
+name = "ai-assistant"
+version = "0.1.0"
+description = "AI Assistant with multiple agent capabilities"
+authors = ["Your Name <your.email@example.com>"]
+
+[tool.poetry.dependencies]
+python = "^3.9"
+trafilatura = "*"
+beautifulsoup4 = "*"
+requests = "*"
+langchain = "*"
+langchain-community = "*"
+langchain-openai = "*"
+arxiv = "*"
+openai = "*"
+pydantic = "*"
+httpx = "*"
+pydantic-core = "*"
+chromadb = "*"
+rank-bm25 = "*"
+sentence-transformers = "*"
+networkx = "*"
+nltk = "*"
+numpy = "*"
+scikit-learn = "*"
+datasketch = "*"
+ragas = "*"
+python-dotenv = "^1.0.0"
+gradio = "*"
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^7.4.3"
+pytest-cov = "^4.1.0"
+pytest-asyncio = "*"
+pylint = "^3.0.2"
+
+[build-system]
+requires = ["poetry-core>=1.0.0"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.pytest.ini_options]
+testpaths = ["test"]
+python_files = ["test_*.py"]
+addopts = "-v --cov=./ --cov-report=xml --cov-report=term-missing"
+
+[tool.pylint.messages_control]
+disable = [
+    "C0111", # missing-docstring
+    "C0103", # invalid-name
+    "C0303", # trailing-whitespace
+    "C0301", # line-too-long
+    "W0621", # redefined-outer-name
+    "R0903", # too-few-public-methods
+    "R0913", # too-many-arguments
+    "W0702", # bare-except
+    "W0703", # broad-except
+    "R0914", # too-many-locals
+]
+
+[tool.pylint.format]
+max-line-length = 120 

@@ -1,0 +1,12 @@
+version: '3.8'
+
+services:
+  ai-assistant:
+    image: ${DOCKERHUB_USERNAME}/ai-assistant:latest
+    ports:
+      - "7860:7860"
+    environment:
+      - HF_ENDPOINT=${HF_ENDPOINT}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - OPENAI_API_BASE=${OPENAI_API_BASE}
+    restart: unless-stopped 

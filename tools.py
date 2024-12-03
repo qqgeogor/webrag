@@ -287,7 +287,7 @@ class SemanticChunkerTool:
         
         return chunks
 
-# 1. 基础模型定义
+# PaperInfo基础模型定义
 class PaperInfo(BaseModel):
     title: str
     abstract: str
@@ -295,7 +295,7 @@ class PaperInfo(BaseModel):
     authors: List[str]
 
 
-# 3. 工具定义
+# ArxivTool工具定义
 class ArxivTool:
     def __init__(self):
         self.name = "arxiv_search"
@@ -321,6 +321,8 @@ class ArxivTool:
 
         return papers
 
+
+#  Calculator Tool,用于执行基础数学运算
 class CalculatorTool:
     def __init__(self):
         self.name = "calculator"
@@ -330,6 +332,7 @@ class CalculatorTool:
         return a + b
     
 
+# HybridSearch工具定义,用于混合检索，使用BM25和Embedding检索
 class HybridSearch:
     def __init__(self,chroma_client,collection,embedding_model=None):
         self._chroma_client = chroma_client
