@@ -29,6 +29,7 @@ ragas = "*"
 python-dotenv = "^1.0.0"
 gradio = "*"
 onnxruntime = "1.16.1"
+langgraph = "*"
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^7.4.3"
