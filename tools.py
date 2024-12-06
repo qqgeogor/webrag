@@ -1,20 +1,17 @@
 from abc import ABC, abstractmethod
 from typing import Annotated, Any, Dict, List, Optional, Sequence, TypedDict, Literal
 
-import operator
-from enum import Enum
+import chromadb
 import arxiv
 import httpx
 from pydantic import BaseModel, Field
 
 from prompt import prompt_master
+from db_helper import DBHelper,StorageType
 from utils import WebContentExtractor
 from logging_config import log_tool_usage
 
-import chromadb
-from clickhouse_connect import create_client
 
-from rank_bm25 import BM25Okapi
 from sentence_transformers import SentenceTransformer
 import numpy as np
 from typing import List, Dict
@@ -27,9 +24,6 @@ import hashlib
 from utils import LLMConfig
 
 
-
-
-
 class SemanticChunk(BaseModel):
     content: str
     start_idx: int
@@ -38,12 +32,12 @@ class SemanticChunk(BaseModel):
     sentences: List[str]
     url: str
 
-class SemanticChunkerTool:
+class SemanticChunker:
     def __init__(
         self,
         model_name: str = 'all-MiniLM-L6-v2',
-        min_chunk_size: int = 100,
-        max_chunk_size: int = 1000,
+        min_chunk_size: int = 512,
+        max_chunk_size: int = 1024,
         overlap_size: int = 50,
         embedding_model: SentenceTransformer = None
     ):
@@ -335,18 +329,6 @@ class CalculatorTool:
         return a + b
     
 
-# Add new enum for storage type
-class StorageType(str, Enum):
-    CHROMA = "chroma"
-    MYSCALE = "myscale"
-
-# Add configuration for MyScale
-class MyScaleConfig:
-    host = "127.0.0.1"  # Replace with actual host
-    port = 8123  # Default MyScale port
-    username = "default"
-    password = ""
-    database = "default"
 
 # Add new models for unified search results
 class SearchDocument(BaseModel):
@@ -378,15 +360,10 @@ class HybridSearch:
                 name=collection_name,
                 metadata={"hnsw:space": "cosine"}
             )
-        else:  # MyScale
-            # 使用 create_client 而不是直接实例化 Client
-            self._myscale_client = create_client(
-                host=MyScaleConfig.host,
-                port=MyScaleConfig.port,
-                username=MyScaleConfig.username,
-                password=MyScaleConfig.password,
-                database=MyScaleConfig.database
-            )
+        else:
+            self.db_helper = DBHelper(storage_type)
+  
+
         
         self.min_results = 3  # 最少期望结果数
         self.initial_threshold = 0.7  # 初始相似度阈值
@@ -411,30 +388,8 @@ class HybridSearch:
     ):
         instance = cls(storage_type, collection_name, embedding_model)
         
-        if storage_type == StorageType.MYSCALE:
-            try:
-                # 1. 创建表
-                create_table_query = f"""
-                CREATE TABLE IF NOT EXISTS {collection_name} (
-                    id String,
-                    content String,
-                    metadata String,
-                    embedding Array(Float32),
-                    url String,
-                    created_at DateTime DEFAULT now(),
-                    CONSTRAINT vector_len CHECK length(embedding) = 384,
-                    INDEX embedding_index embedding TYPE MSTG('dimension=384', 'distance_type=Cosine')
-                ) ENGINE = MergeTree()
-                ORDER BY (id)
-                """
-                instance._myscale_client.command(create_table_query)
-                
-                                
-                print(f"Successfully initialized MyScale collection: {collection_name}")
-            except Exception as e:
-                print(f"Error initializing MyScale collection: {str(e)}")
-                raise
-                
+        instance.db_helper.create_table(collection_name)
+        
         return instance
 
     def _get_collection(self):
@@ -476,20 +431,9 @@ class HybridSearch:
                 ]
                 
             else:  # MyScale
-                embedding_str = ','.join(map(str, query_embedding.tolist()))
-                vector_query = f"""
-                SELECT 
-                    id,
-                    content,
-                    metadata,
-                    url,
-                    cosineDistance(embedding, [{embedding_str}]) as distance
-                FROM {self.collection_name}
-                ORDER BY distance ASC
-                LIMIT {top_k}
-                """
                 
-                results = self.collection.query(vector_query).named_results()
+                
+                results = self.db_helper.query_hybrid(query,query_embedding,self.collection_name,top_k)
                 
                 documents = [
                     SearchDocument(
@@ -501,7 +445,7 @@ class HybridSearch:
                     )
                     for row in results
                 ]
-
+            
             # Sort by score and apply threshold
             documents.sort(key=lambda x: 1 - (x.distance or 0), reverse=True)
             
@@ -543,7 +487,7 @@ class WebSearchTool:
         self.model_name: str = 'all-MiniLM-L6-v2'
         
         self.embedding_model = SentenceTransformer(self.model_name,cache_folder='./cache')
-        self.semantic_chunker = SemanticChunkerTool(
+        self.semantic_chunker = SemanticChunker(
             min_chunk_size=100,
             max_chunk_size=1000,
             overlap_size=50,
@@ -663,21 +607,8 @@ class WebSearchTool:
                     )
                 else:  # MyScale
                     # 批量插入数据
-                    insert_values = []
-                    for doc_id, doc, meta, emb in zip(ids, documents, metadatas, embeddings):
-                        insert_values.append(
-                            f"""('{doc_id}', '{doc.replace("'", "''")}', """
-                            f"""'{json.dumps(meta)}', {emb}, '{meta['url']}')"""
-                        )
-                    
-                    insert_query = f"""
-                    INSERT INTO web_search_content 
-                    (id, content, metadata, embedding, url)
-                    VALUES {','.join(insert_values)}
-                    """
-                    
                     try:
-                        self.hybrid_search._myscale_client.command(insert_query)
+                        self.hybrid_search.db_helper.insert(ids, documents, metadatas, embeddings)
                     except Exception as e:
                         print(f"MyScale插入数据失败: {str(e)}")
                 
