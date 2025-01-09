@@ -206,7 +206,7 @@ class KarrasSampler:
         # Main sampling loop
         for i in range(len(sigmas) - 1):
             sigma = sigmas[i]
-            
+
             # Euler step
             denoised = model.denoise(x, latent, mask,ids_restore)
             d = (x - denoised) / sigma
@@ -249,10 +249,11 @@ class KarrasSampler:
         # Sample random sigma if not provided
         if sigma is None:
             # Generate random uniform values between 0 and 1
-            indices = torch.randint(
-                0, self.num_steps - 1, (x.shape[0],), device=x.device
-            )
-            sigma = sigmas[indices].view(-1,1,1,1)
+            # indices = torch.randint(
+            #     0, self.num_steps - 1, (x.shape[0],), device=x.device
+            # )
+            # sigma = sigmas[indices].view(-1,1,1,1)
+            sigma = self.get_random_sigma(torch.rand(x.shape[0])).to(x.device)
         else:
             sigma = sigma.view(-1,1,1,1)
         # Add noise to image
@@ -261,22 +262,27 @@ class KarrasSampler:
         return noisy, sigma
 
 
-    def get_random_sigma(self, t: torch.Tensor) -> torch.Tensor:
+    def get_random_sigma(self, u: torch.Tensor) -> torch.Tensor:
         """
         Get random sigma value from schedule using uniform random number
         
         Args:
-            u: Uniform random number between 0 and 1
+            t: Uniform random number between 0 and 1
             
         Returns:
             Random sigma value from schedule
         """
-        # Convert u from uniform to log-uniform
-        sigmas = self.sigmas.to(t.device)
-        sigma = sigmas[t].view(-1,1,1,1)
+        # Convert uniform to log-uniform distribution
+        log_sigma_min = math.log(self.sigma_min)
+        log_sigma_max = math.log(self.sigma_max)
         
+        # Interpolate in log space
+        log_sigma = log_sigma_min + u * (log_sigma_max - log_sigma_min)
         
-        return sigma
+        # Convert back from log space
+        sigma = torch.exp(log_sigma)
+        
+        return sigma.view(-1,1,1,1)
 
 def get_ancestral_step(sigma_from: torch.Tensor, sigma_to: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
     """

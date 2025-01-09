@@ -151,7 +151,7 @@ class MaskedAutoencoderViT(nn.Module):
     def forward_feature(self, x):
         x = self.patch_embed(x)
         x = x + self.pos_embed[:, 1:, :]
-        
+
         cls_token = self.cls_token + self.pos_embed[:, :1, :]
         cls_tokens = cls_token.expand(x.shape[0], -1, -1)
         x = torch.cat((cls_tokens, x), dim=1)
@@ -212,7 +212,7 @@ class MaskedAutoencoderViT(nn.Module):
 
         return x
 
-    def forward_loss(self, imgs, pred, mask):
+    def forward_loss(self, imgs, pred, mask,weightings=None):
         target = self.patchify(imgs)
         if self.norm_pix_loss:
             mean = target.mean(dim=-1, keepdim=True)
@@ -221,16 +221,30 @@ class MaskedAutoencoderViT(nn.Module):
 
         loss = (pred - target) ** 2
         loss = loss.mean(dim=-1)
+        if weightings is not None:
+            loss = loss * weightings.view(-1,1)
         loss = (loss * mask).sum() / mask.sum()
         return loss
 
     def forward(self, imgs, mask_ratio=0.75):
         latent, mask, ids_restore = self.forward_encoder(imgs, mask_ratio)
         
-        noised_image,noise = self.sampler.add_noise(imgs)
+        noised_image,sigma = self.sampler.add_noise(imgs)
+        
+        snrs = sigma**-2
+        weightings = snrs + 1.0
+
+        snrs = -2*torch.log(sigma)
+        # snrs = torch.exp(snrs)
+        weightings = snrs + 1.0
+        weightings = torch.ones_like(weightings)
+        
+        # print('snrs',snrs.min(),snrs.max())
+        # print('sigma',sigma.min(),sigma.max())
+        # exit()
         
         pred = self.forward_decoder(latent, noised_image, mask, ids_restore)
-        loss = self.forward_loss(imgs, pred, mask)
+        loss = self.forward_loss(imgs, pred, mask,weightings)
         return loss, pred, mask
     
     
@@ -617,12 +631,16 @@ def train_mae():
             plt.axis('off')
             plt.savefig(os.path.join(args.output_dir, f'reconstruction_epoch_{epoch}.png'))
             plt.close()
+            epoch_path = os.path.join(args.output_dir, f'model_epoch_{epoch}.pth')
+            torch.save(model.state_dict(), epoch_path)
             
             # Save best model
             if epoch_loss < best_loss:
                 best_loss = epoch_loss
                 best_path = os.path.join(args.output_dir, 'model_best.pth')
-                torch.save(save_dict, best_path)
+                
+                torch.save(model.state_dict(), best_path)
+                
         
         print(f'Epoch {epoch + 1} completed. Average loss: {epoch_loss:.3f}')
 
