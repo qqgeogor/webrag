@@ -2,6 +2,11 @@ from typing import List, Optional
 import re
 import jieba
 from dataclasses import dataclass
+from pydantic import BaseModel
+import networkx as nx
+from sklearn.cluster import AgglomerativeClustering
+from sentence_transformers import SentenceTransformer
+import numpy as np
 
 @dataclass
 class TextChunk:
@@ -147,3 +152,265 @@ class TextChunker:
             results.append(result)
             
         return results 
+    
+
+
+class SemanticChunk(BaseModel):
+    content: str
+    start_idx: int
+    end_idx: int
+    coherence_score: float
+    sentences: List[str]
+    url: str
+
+class SemanticChunker:
+    def __init__(
+        self,
+        model_name: str = 'all-MiniLM-L6-v2',
+        min_chunk_size: int = 512,
+        max_chunk_size: int = 1024,
+        overlap_size: int = 50,
+        embedding_model: SentenceTransformer = None
+    ):
+        if embedding_model is None:
+            self.model = SentenceTransformer(model_name,cache_folder='./cache')
+        else:
+            self.model = embedding_model
+        self.min_chunk_size = min_chunk_size
+        self.max_chunk_size = max_chunk_size
+        self.overlap_size = overlap_size
+        
+    def _split_into_sentences(self, text: str) -> List[str]:
+        """将文本分割为句子"""
+        # 处理中英文混合的情况
+        text = re.sub(r'([。！？\?!])\s*', r'\1\n', text)
+        sentences = [s.strip() for s in text.split('\n') if s.strip()]
+        return sentences
+        
+    def _calculate_coherence(
+        self,
+        embeddings: np.ndarray,
+        start_idx: int,
+        end_idx: int
+    ) -> float:
+        """计算文本块的语义连贯性"""
+        if end_idx - start_idx < 2:
+            return 1.0
+            
+        chunk_embeddings = embeddings[start_idx:end_idx]
+        similarities = np.inner(chunk_embeddings, chunk_embeddings)
+        # 计算相邻句子的平均相似度
+        coherence = np.mean([
+            similarities[i][i+1] 
+            for i in range(len(similarities)-1)
+        ])
+        return float(coherence)
+
+    async def chunk_by_semantic_similarity(
+        self,
+        text: str,
+        url: str
+    ) -> List[SemanticChunk]:
+        """基于语义相似度的动态分块"""
+        sentences = self._split_into_sentences(text)
+        if not sentences:
+            return []
+            
+        # 计算句子嵌入
+        embeddings = self.model.encode(sentences)
+        
+        # 使用层次聚类
+        clustering = AgglomerativeClustering(
+            n_clusters=None,
+            distance_threshold=0.5,
+            linkage='ward'
+        )
+        
+        
+        # 重塑embeddings为2D数组
+        embeddings = embeddings.reshape(-1, embeddings.shape[-1])
+        
+        # 检查embeddings维度
+        if len(embeddings.shape) <= 1:
+            # 如果只有一个句子,直接返回单个chunk
+            return [SemanticChunk(
+                content=text,
+                start_idx=0,
+                end_idx=1,
+                coherence_score=1.0,
+                sentences=sentences,
+                url=url
+            )]
+            
+        clusters = clustering.fit_predict(embeddings)
+        
+        # 根据聚类结果生成chunks
+        chunks = []
+        current_chunk = []
+        current_start = 0
+        
+        for i, (sentence, cluster) in enumerate(zip(sentences, clusters)):
+            current_chunk.append(sentence)
+            chunk_text = ' '.join(current_chunk)
+            
+            # 检查是否需要切分
+            if (len(chunk_text) >= self.max_chunk_size or  # 达到最大长度
+                (i < len(sentences)-1 and clusters[i] != clusters[i+1] and  # 聚类边界
+                 len(chunk_text) >= self.min_chunk_size)):  # 达到最小长度
+                
+                coherence = self._calculate_coherence(
+                    embeddings,
+                    current_start,
+                    i + 1
+                )
+                
+                chunks.append(SemanticChunk(
+                    content=chunk_text,
+                    start_idx=current_start,
+                    end_idx=i + 1,
+                    coherence_score=coherence,
+                    sentences=current_chunk,
+                    url=url
+                ))
+                
+                current_chunk = []
+                current_start = i + 1
+        
+        # 处理最后一个chunk
+        if current_chunk:
+            coherence = self._calculate_coherence(
+                embeddings,
+                current_start,
+                len(sentences)
+            )
+
+            chunks.append(SemanticChunk(
+                content=' '.join(current_chunk),
+                start_idx=current_start,
+                end_idx=len(sentences),
+                coherence_score=coherence,
+                sentences=current_chunk,
+                url=url
+            ))
+        
+        return chunks
+
+
+    async def chunk_by_topic_segmentation(
+        self,
+        text: str,
+        url: Optional[str] = None
+    ) -> List[SemanticChunk]:
+        """基于主题分割的动态分块"""
+        sentences = self._split_into_sentences(text)
+        if not sentences:
+            return []
+            
+        # 计算句子嵌入
+        embeddings = self.model.encode(sentences)
+        
+        # 构建相似度图
+        similarity_matrix = np.inner(embeddings, embeddings)
+        G = nx.Graph()
+        
+        # 添加边，权重为相似度
+        for i in range(len(sentences)):
+            for j in range(i + 1, len(sentences)):
+                similarity = similarity_matrix[i][j]
+                if similarity > 0.5:  # 相似度阈值
+                    G.add_edge(i, j, weight=similarity)
+        
+        # 使用社区检测算法
+        communities = nx.community.louvain_communities(G)
+        
+        # 根据社区划分生成chunks
+        chunks = []
+        for community in communities:
+            community = sorted(community)
+            if not community:
+                continue
+                
+            # 获取社区内的句子
+            community_sentences = [sentences[i] for i in community]
+            chunk_text = ' '.join(community_sentences)
+            
+            # 如果chunk太大，进行二次划分
+            if len(chunk_text) > self.max_chunk_size:
+                sub_chunks = self._split_large_chunk(
+                    community_sentences,
+                    embeddings[community],
+                    url,
+                )
+                chunks.extend(sub_chunks)
+            else:
+                coherence = self._calculate_coherence(
+                    embeddings,
+                    community[0],
+                    community[-1] + 1
+                )
+                
+                chunks.append(SemanticChunk(
+                    content=chunk_text,
+                    start_idx=community[0],
+                    end_idx=community[-1] + 1,
+                    coherence_score=coherence,
+                    sentences=community_sentences,
+                    url=url
+                ))
+        
+        return sorted(chunks, key=lambda x: x.start_idx)
+
+    def _split_large_chunk(
+        self,
+        sentences: List[str],
+        embeddings: np.ndarray,
+        url: Optional[str] = None
+    ) -> List[SemanticChunk]:
+        """将大块文本进行二次划分"""
+        chunks = []
+        current_chunk = []
+        current_start = 0
+        current_length = 0
+        
+        for i, sentence in enumerate(sentences):
+            current_chunk.append(sentence)
+            current_length += len(sentence)
+            
+            if current_length >= self.max_chunk_size:
+                coherence = self._calculate_coherence(
+                    embeddings,
+                    current_start,
+                    i + 1
+                )
+                
+                chunks.append(SemanticChunk(
+                    content=' '.join(current_chunk),
+                    start_idx=current_start,
+                    end_idx=i + 1,
+                    coherence_score=coherence,
+                    sentences=current_chunk,
+                    url=url
+                ))
+                
+                current_chunk = []
+                current_start = i + 1
+                current_length = 0
+        
+        # 处理剩余部分
+        if current_chunk:
+            coherence = self._calculate_coherence(
+                embeddings,
+                current_start,
+                len(sentences)
+            )
+            
+            chunks.append(SemanticChunk(
+                content=' '.join(current_chunk),
+                start_idx=current_start,
+                end_idx=len(sentences),
+                coherence_score=coherence,
+                sentences=current_chunk,
+                url=url
+            ))
+        
+        return chunks

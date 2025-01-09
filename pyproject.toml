@@ -5,7 +5,7 @@ description = "AI Assistant with multiple agent capabilities"
 authors = ["Your Name <your.email@example.com>"]
 
 [tool.poetry.dependencies]
-python = "^3.9"
+python = "^3.10"
 trafilatura = "*"
 beautifulsoup4 = "*"
 requests = "*"
@@ -30,6 +30,9 @@ python-dotenv = "^1.0.0"
 gradio = "*"
 onnxruntime = "1.16.1"
 langgraph = "*"
+clickhouse-driver = "^0.2.9"
+refchecker = "0.2.14"
+clickhouse-connect = "^0.8.9"
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^7.4.3"

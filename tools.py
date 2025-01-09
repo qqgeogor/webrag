@@ -1,291 +1,23 @@
 from abc import ABC, abstractmethod
-from typing import Annotated, Any, Dict, List, Optional, Sequence, TypedDict
+from typing import Annotated, Any, Dict, List, Optional, Sequence, TypedDict, Literal
 
-import operator
-from enum import Enum
+import chromadb
 import arxiv
 import httpx
 from pydantic import BaseModel, Field
 
-from prompt import prompt_master
+from db_helper import DBHelper,StorageType
 from utils import WebContentExtractor
-from logging_config import log_tool_usage
 
-import chromadb
-
-
-from rank_bm25 import BM25Okapi
 from sentence_transformers import SentenceTransformer
 import numpy as np
 from typing import List, Dict
 import numpy as np
-from sklearn.cluster import AgglomerativeClustering
-import networkx as nx
-import re
+import json
 import hashlib
 from utils import LLMConfig
+from text_chunker import SemanticChunker
 
-
-
-class SemanticChunk(BaseModel):
-    content: str
-    start_idx: int
-    end_idx: int
-    coherence_score: float
-    sentences: List[str]
-    url: str
-
-class SemanticChunkerTool:
-    def __init__(
-        self,
-        model_name: str = 'all-MiniLM-L6-v2',
-        min_chunk_size: int = 100,
-        max_chunk_size: int = 1000,
-        overlap_size: int = 50,
-        embedding_model: SentenceTransformer = None
-    ):
-        if embedding_model is None:
-            self.model = SentenceTransformer(model_name,cache_folder='./cache')
-        else:
-            self.model = embedding_model
-        self.min_chunk_size = min_chunk_size
-        self.max_chunk_size = max_chunk_size
-        self.overlap_size = overlap_size
-        
-    def _split_into_sentences(self, text: str) -> List[str]:
-        """将文本分割为句子"""
-        # 处理中英文混合的情况
-        text = re.sub(r'([。！？\?!])\s*', r'\1\n', text)
-        sentences = [s.strip() for s in text.split('\n') if s.strip()]
-        return sentences
-        
-    def _calculate_coherence(
-        self,
-        embeddings: np.ndarray,
-        start_idx: int,
-        end_idx: int
-    ) -> float:
-        """计算文本块的语义连贯性"""
-        if end_idx - start_idx < 2:
-            return 1.0
-            
-        chunk_embeddings = embeddings[start_idx:end_idx]
-        similarities = np.inner(chunk_embeddings, chunk_embeddings)
-        # 计算相邻句子的平均相似度
-        coherence = np.mean([
-            similarities[i][i+1] 
-            for i in range(len(similarities)-1)
-        ])
-        return float(coherence)
-
-    async def chunk_by_semantic_similarity(
-        self,
-        text: str,
-        url: str
-    ) -> List[SemanticChunk]:
-        """基于语义相似度的动态分块"""
-        sentences = self._split_into_sentences(text)
-        if not sentences:
-            return []
-            
-        # 计算句子嵌入
-        embeddings = self.model.encode(sentences)
-        
-        # 使用层次聚类
-        clustering = AgglomerativeClustering(
-            n_clusters=None,
-            distance_threshold=0.5,
-            linkage='ward'
-        )
-        
-        
-        # 重塑embeddings为2D数组
-        embeddings = embeddings.reshape(-1, embeddings.shape[-1])
-        
-        # 检查embeddings维度
-        if len(embeddings.shape) <= 1:
-            # 如果只有一个句子,直接返回单个chunk
-            return [SemanticChunk(
-                content=text,
-                start_idx=0,
-                end_idx=1,
-                coherence_score=1.0,
-                sentences=sentences,
-                url=url
-            )]
-            
-        clusters = clustering.fit_predict(embeddings)
-        
-        # 根据聚类结果生成chunks
-        chunks = []
-        current_chunk = []
-        current_start = 0
-        
-        for i, (sentence, cluster) in enumerate(zip(sentences, clusters)):
-            current_chunk.append(sentence)
-            chunk_text = ' '.join(current_chunk)
-            
-            # 检查是否需要切分
-            if (len(chunk_text) >= self.max_chunk_size or  # 达到最大长度
-                (i < len(sentences)-1 and clusters[i] != clusters[i+1] and  # 聚类边界
-                 len(chunk_text) >= self.min_chunk_size)):  # 达到最小长度
-                
-                coherence = self._calculate_coherence(
-                    embeddings,
-                    current_start,
-                    i + 1
-                )
-                
-                chunks.append(SemanticChunk(
-                    content=chunk_text,
-                    start_idx=current_start,
-                    end_idx=i + 1,
-                    coherence_score=coherence,
-                    sentences=current_chunk,
-                    url=url
-                ))
-                
-                current_chunk = []
-                current_start = i + 1
-        
-        # 处理最后一个chunk
-        if current_chunk:
-            coherence = self._calculate_coherence(
-                embeddings,
-                current_start,
-                len(sentences)
-            )
-
-            chunks.append(SemanticChunk(
-                content=' '.join(current_chunk),
-                start_idx=current_start,
-                end_idx=len(sentences),
-                coherence_score=coherence,
-                sentences=current_chunk,
-                url=url
-            ))
-        
-        return chunks
-
-
-    async def chunk_by_topic_segmentation(
-        self,
-        text: str,
-        url: Optional[str] = None
-    ) -> List[SemanticChunk]:
-        """基于主题分割的动态分块"""
-        sentences = self._split_into_sentences(text)
-        if not sentences:
-            return []
-            
-        # 计算句子嵌入
-        embeddings = self.model.encode(sentences)
-        
-        # 构建相似度图
-        similarity_matrix = np.inner(embeddings, embeddings)
-        G = nx.Graph()
-        
-        # 添加边，权重为相似度
-        for i in range(len(sentences)):
-            for j in range(i + 1, len(sentences)):
-                similarity = similarity_matrix[i][j]
-                if similarity > 0.5:  # 相似度阈值
-                    G.add_edge(i, j, weight=similarity)
-        
-        # 使用社区检测算法
-        communities = nx.community.louvain_communities(G)
-        
-        # 根据社区划分生成chunks
-        chunks = []
-        for community in communities:
-            community = sorted(community)
-            if not community:
-                continue
-                
-            # 获取社区内的句子
-            community_sentences = [sentences[i] for i in community]
-            chunk_text = ' '.join(community_sentences)
-            
-            # 如果chunk太大，进行二次划分
-            if len(chunk_text) > self.max_chunk_size:
-                sub_chunks = self._split_large_chunk(
-                    community_sentences,
-                    embeddings[community],
-                    url,
-                )
-                chunks.extend(sub_chunks)
-            else:
-                coherence = self._calculate_coherence(
-                    embeddings,
-                    community[0],
-                    community[-1] + 1
-                )
-                
-                chunks.append(SemanticChunk(
-                    content=chunk_text,
-                    start_idx=community[0],
-                    end_idx=community[-1] + 1,
-                    coherence_score=coherence,
-                    sentences=community_sentences,
-                    url=url
-                ))
-        
-        return sorted(chunks, key=lambda x: x.start_idx)
-
-    def _split_large_chunk(
-        self,
-        sentences: List[str],
-        embeddings: np.ndarray,
-        url: Optional[str] = None
-    ) -> List[SemanticChunk]:
-        """将大块文本进行二次划分"""
-        chunks = []
-        current_chunk = []
-        current_start = 0
-        current_length = 0
-        
-        for i, sentence in enumerate(sentences):
-            current_chunk.append(sentence)
-            current_length += len(sentence)
-            
-            if current_length >= self.max_chunk_size:
-                coherence = self._calculate_coherence(
-                    embeddings,
-                    current_start,
-                    i + 1
-                )
-                
-                chunks.append(SemanticChunk(
-                    content=' '.join(current_chunk),
-                    start_idx=current_start,
-                    end_idx=i + 1,
-                    coherence_score=coherence,
-                    sentences=current_chunk,
-                    url=url
-                ))
-                
-                current_chunk = []
-                current_start = i + 1
-                current_length = 0
-        
-        # 处理剩余部分
-        if current_chunk:
-            coherence = self._calculate_coherence(
-                embeddings,
-                current_start,
-                len(sentences)
-            )
-            
-            chunks.append(SemanticChunk(
-                content=' '.join(current_chunk),
-                start_idx=current_start,
-                end_idx=len(sentences),
-                coherence_score=coherence,
-                sentences=current_chunk,
-                url=url
-            ))
-        
-        return chunks
 
 # PaperInfo基础模型定义
 class PaperInfo(BaseModel):
@@ -332,11 +64,42 @@ class CalculatorTool:
         return a + b
     
 
-# HybridSearch工具定义,用于混合检索，使用BM25和Embedding检索
+
+# Add new models for unified search results
+class SearchDocument(BaseModel):
+    id: str
+    content: str
+    metadata: Dict[str, Any]
+    embedding: Optional[List[float]] = None
+    distance: Optional[float] = None
+    url: Optional[str] = None
+
+class SearchResult(BaseModel):
+    documents: List[SearchDocument]
+    total: int
+
+# Modify HybridSearch class
 class HybridSearch:
-    def __init__(self,chroma_client,collection,embedding_model=None):
-        self._chroma_client = chroma_client
-        self._collection = collection
+    def __init__(
+        self,
+        storage_type: StorageType = StorageType.MYSCALE,
+        collection_name: str = "web_search_content",
+        embedding_model=None
+    ):
+        self.storage_type = storage_type
+        self.collection_name = collection_name
+
+        if storage_type == StorageType.CHROMA:
+            self._chroma_client = chromadb.PersistentClient(path="./chroma_db")
+            self._collection = self._chroma_client.get_or_create_collection(
+                name=collection_name,
+                metadata={"hnsw:space": "cosine"}
+            )
+        else:
+            self.db_helper = DBHelper(storage_type)
+  
+
+        
         self.min_results = 3  # 最少期望结果数
         self.initial_threshold = 0.7  # 初始相似度阈值
         
@@ -346,134 +109,111 @@ class HybridSearch:
         else:
             self.model = embedding_model
 
-        # 用于存储BM25索引的属性
-        self.bm25_index = None
-        self.doc_store = []  # 存储文档原文
-        
-    def _get_collection(self):
-        return self._collection
-    
-    @property
-    def collection(self):
-        return self._get_collection()   
-
-    def _get_chroma_client(self):
-        return self._chroma_client
-    
-    @property
-    def chroma_client(self):
-        return self._get_chroma_client()
-    
-    def _create_bm25_index(self, documents: List[str]):
-        """创建BM25索引"""
-        # 对文档进行分词
-        tokenized_docs = [doc.split() for doc in documents]
-        self.bm25_index = BM25Okapi(tokenized_docs)
-        self.doc_store = documents
-        
     def _get_embedding(self, text: str) -> np.ndarray:
         """获取文本的embedding向量"""
         return self.model.encode(text)
-    
+
+
+    @classmethod
+    async def create(
+        cls,
+        storage_type: StorageType = StorageType.MYSCALE,
+        collection_name: str = "web_search_content",
+        embedding_model=None
+    ):
+        instance = cls(storage_type, collection_name, embedding_model)
+        
+        instance.db_helper.create_table(collection_name)
+        
+        return instance
+
+    def _get_collection(self):
+        return self._collection if self.storage_type == StorageType.CHROMA else self._myscale_client
+
+    @property
+    def collection(self):
+        return self._get_collection()
+
     async def hybrid_search(
         self, 
         query: str, 
         top_k: int = 5, 
         alpha: float = 0.9
-    ) -> List[Dict]:
-        """
-        混合检索方法
-        """
+    ) -> SearchResult:
         try:
-            # 1. Embedding 检索
             query_embedding = self._get_embedding(query)
             
-            # 获取集合中的文档数量
-            collection_size = len(self.collection.get()["ids"])
-            actual_top_k = min(top_k * 2, collection_size)  # 确保不超过实际文档数
-            
-            embedding_results = self.collection.query(
-                query_embeddings=[query_embedding.tolist()],
-                n_results=actual_top_k
-            )
-            
-            # 2. BM25 检索
-            if self.bm25_index is None:
-                all_docs = self.collection.get()["documents"]
-                self._create_bm25_index(all_docs)
-            
-            bm25_scores = self.bm25_index.get_scores(query.split())
-            
-            # 3. 合并结果
-            combined_results = []
-            seen_docs = set()
-            
-            # 处理embedding结果
-            for i, (doc_id, distance) in enumerate(zip(
-                embedding_results['ids'][0], 
-                embedding_results['distances'][0]
-            )):
-                if doc_id not in seen_docs:
-                    # 获取文档内容和元数据
-                    doc_data = self.collection.get(ids=[doc_id])
-                    doc_content = doc_data["documents"][0]
-                    doc_metadata = doc_data["metadatas"][0]
-                    
-                    # 获取文档在原始列表中的索引
-                    try:
-                        doc_index = self.doc_store.index(doc_content)
-                        bm25_score = bm25_scores[doc_index]
-                    except (ValueError, IndexError):
-                        bm25_score = 0
-                    
-                    # 归一化分数
-                    embedding_score = 1 - distance  # 转换距离为相似度
-                    normalized_bm25 = bm25_score / max(bm25_scores) if max(bm25_scores) > 0 else 0
-                    
-                    # 计算混合分数
-                    final_score = alpha * embedding_score + (1 - alpha) * normalized_bm25
-                    
-                    combined_results.append({
-                        "id": doc_id,
-                        "content": doc_content,
-                        "metadata": doc_metadata,
-                        "score": final_score,
-                        "embedding_score": embedding_score,
-                        "bm25_score": normalized_bm25
-                    })
-                    seen_docs.add(doc_id)
-            
-            # 对所有候选结果排序
-            combined_results.sort(key=lambda x: x["score"], reverse=True)
-            
-            # 动态调整阈值以获得合适数量的结果
-            threshold = self.initial_threshold
-            while threshold > 0:
-                filtered_results = [
-                    r for r in combined_results 
-                    if r["score"] >= threshold
+            if self.storage_type == StorageType.CHROMA:
+                raw_results = self.collection.query(
+                    query_embeddings=[query_embedding.tolist()],
+                    n_results=top_k
+                )
+                
+                documents = [
+                    SearchDocument(
+                        id=doc_id,
+                        content=content,
+                        metadata=metadata,
+                        distance=distance,
+                        url=metadata.get("url")
+                    )
+                    for doc_id, content, metadata, distance in zip(
+                        raw_results['ids'][0],
+                        raw_results['documents'][0],
+                        raw_results['metadatas'][0],
+                        raw_results['distances'][0]
+                    )
                 ]
                 
-                if len(filtered_results) >= self.min_results:
-                    return filtered_results[:top_k]
-                    
-                threshold -= 0.1  # 大幅降低阈值
+            else:  # MyScale
+                
+                
+                results = self.db_helper.query_hybrid(query,query_embedding,self.collection_name,top_k)
+                
+                documents = [
+                    SearchDocument(
+                        id=row['id'],
+                        content=row['content'],
+                        metadata=json.loads(row['metadata']),
+                        distance=float(row['distance']),
+                        url=row['url']
+                    )
+                    for row in results
+                ]
             
-            # 如果仍然没有足够的结果，返回所有可用结果
-            return combined_results[:top_k]
-        
+            # Sort by score and apply threshold
+            documents.sort(key=lambda x: 1 - (x.distance or 0), reverse=True)
+            
+            threshold = self.initial_threshold
+            while threshold > 0:
+                filtered_docs = [
+                    doc for doc in documents 
+                    if (1 - (doc.distance or 0)) >= threshold
+                ]
+                
+                if len(filtered_docs) >= self.min_results:
+                    return SearchResult(
+                        documents=filtered_docs[:top_k],
+                        total=len(filtered_docs)
+                    )
+                    
+                threshold -= 0.1
+
+            return SearchResult(
+                documents=documents[:top_k],
+                total=len(documents)
+            )
             
         except Exception as e:
             print(f"检索过程中出错: {str(e)}")
-            return []
-        
+            return SearchResult(documents=[], total=0)
 
 class WebSearchParams(BaseModel):
     query: str = Field(..., description="搜索关键词")
     max_results: int = Field(default=5, description="最大返回结果数")
 
 class WebSearchTool:
-    def __init__(self):
+    def __init__(self, storage_type: StorageType = StorageType.MYSCALE):
         self.name = "web_search"
         self.description = "使用Serper.dev搜索网页内容的工具"
         self.api_key = "6d8a07a4c3dbecf40509ae64a9461b38c2c1b99f"
@@ -482,78 +222,32 @@ class WebSearchTool:
         self.model_name: str = 'all-MiniLM-L6-v2'
         
         self.embedding_model = SentenceTransformer(self.model_name,cache_folder='./cache')
-        # 初始化 SemanticChunkerTool
-        self.semantic_chunker = SemanticChunkerTool(
+        self.semantic_chunker = SemanticChunker(
             min_chunk_size=100,
             max_chunk_size=1000,
             overlap_size=50,
             embedding_model = self.embedding_model
         )
-        # 初始化 ChromaDB 客户端 - 更新配置方式
-        self.chroma_client = chromadb.PersistentClient(path="./chroma_db")
-        # 创建网页内容的集合
-        self.collection = self.chroma_client.get_or_create_collection(
-            name="web_search_content",
-            metadata={"hnsw:space": "cosine"}
-        )
-        self.hybrid_search = HybridSearch(self.chroma_client,self.collection,self.embedding_model)
-
+        
         self._client = httpx.AsyncClient()
+        self.storage_type = storage_type
 
-    
-    def _get_client(self):
-        return self._client 
-    
-    @property
-    def client(self):
-        return self._get_client()   
+    @classmethod
+    async def create(cls, storage_type: StorageType = StorageType.MYSCALE):
+        instance = cls(storage_type)
+        instance.hybrid_search = await HybridSearch.create(
+            storage_type=storage_type,
+            collection_name="web_search_content",
+            embedding_model=instance.embedding_model
+        )
+        return instance
 
-    async def fetch_and_process_content(self, url: str, title: str) -> List[dict]:
-        """获取网页内容并进行语义分块"""
-        try:
-        # 获取原始内容
-            response = await self.client.get(url, timeout=10.0)
-            response.raise_for_status()
-            content = await self.extractor.extract_content(response.text)
-                
-            # 使用 SemanticChunker 进行分块，传入URL
-            chunks = await self.semantic_chunker.chunk_by_semantic_similarity(content, url)
-            
-            # 存储到 ChromaDB
-            documents = []
-            metadatas = []
-            ids = []
-            
-            for i, chunk in enumerate(chunks):
-                chunk_id = hashlib.md5(f"{url}_{i}".encode()).hexdigest()
-                documents.append(chunk.content)
-                metadatas.append({
-                    "url": url,
-                    "title": title,
-                    "chunk_index": i,
-                    "coherence_score": chunk.coherence_score
-                })
-                ids.append(chunk_id)
-            
-            # 使用 SentenceTransformer 生成 embeddings
-            if documents:
-                embeddings = self.semantic_chunker.model.encode(documents).tolist()  # 转换为列表以便序列化
-                self.collection.add(
-                    documents=documents,
-                    metadatas=metadatas,
-                    ids=ids,
-                    embeddings=embeddings
-                )
-            
-            return [{"id": id, "content": doc, "metadata": meta, "url": url} 
-                   for id, doc, meta in zip(ids, documents, metadatas)]
-                   
-        except Exception as e:
-            print(f"处理网页内容时出错: {str(e)}")
-            return []
+    @classmethod
+    async def search(cls, query: str, max_results: int = 5) -> List[dict]:
+        instance = await cls.create()
+        return await instance._search(query, max_results)
 
-    @log_tool_usage
-    async def search(self, query: str, max_results: int = 5) -> List[dict]:
+    async def _search(self, query: str, max_results: int = 5) -> List[dict]:
         headers = {
             "X-API-KEY": self.api_key,
             "Content-Type": "application/json",
@@ -588,42 +282,77 @@ class WebSearchTool:
             if chunks:
                 results.extend(chunks)
         
-        results = await self.hybrid_search.hybrid_search(query,max_results)
+        search_results = await self.hybrid_search.hybrid_search(query, max_results)
         
-        # 确保每个结果都包含URL
-        for result in results:
-            if "url" not in result:
-                result["url"] = result.get("metadata", {}).get("url", "无可用URL")
+        results = [
+            {
+                "content": doc.content,
+                "url": doc.url or doc.metadata.get("url", "无可用URL"),
+                "metadata": doc.metadata
+            }
+            for doc in search_results.documents
+        ]
         
         return results
+
+    def _get_client(self):
+        return self._client 
     
-    async def query_similar_content(
-        self,
-        query: str,
-        n_results: int = 5
-    ) -> List[dict]:
-        """从 ChromaDB 中检索相似内容"""
+    @property
+    def client(self):
+        return self._get_client()   
+
+    async def fetch_and_process_content(self, url: str, title: str) -> List[dict]:
+        """获取网页内容并进行语义分块"""
         try:
-            results = self.collection.query(
-                query_texts=[query],
-                n_results=n_results
-            )
+            # 获取原始内容
+            response = await self.client.get(url, timeout=10.0)
+            response.raise_for_status()
+            content = await self.extractor.extract_content(response.text)
+                
+            # 使用 SemanticChunker 进行分块，传入URL
+            chunks = await self.semantic_chunker.chunk_by_semantic_similarity(content, url)
             
-            formatted_results = []
-            for i in range(len(results['documents'][0])):
-                formatted_results.append({
-                    'content': results['documents'][0][i],
-                    'metadata': results['metadatas'][0][i],
-                    'distance': results['distances'][0][i],
-                    'id': results['ids'][0][i]
+            # 准备数据
+            documents = []
+            metadatas = []
+            ids = []
+            
+            for i, chunk in enumerate(chunks):
+                chunk_id = hashlib.md5(f"{url}_{i}".encode()).hexdigest()
+                documents.append(chunk.content)
+                metadatas.append({
+                    "url": url,
+                    "title": title,
+                    "chunk_index": i,
+                    "coherence_score": chunk.coherence_score
                 })
+                ids.append(chunk_id)
             
-            return formatted_results
+            # 使用 SentenceTransformer 生成 embeddings
+            if documents:
+                embeddings = self.semantic_chunker.model.encode(documents).tolist()  # 转换为列表以便序列化
+                
+                if self.storage_type == StorageType.CHROMA:
+                    self.collection.add(
+                        documents=documents,
+                        metadatas=metadatas,
+                        ids=ids,
+                        embeddings=embeddings
+                    )
+                else:  # MyScale
+                    # 批量插入数据
+                    try:
+                        self.hybrid_search.db_helper.insert(ids, documents, metadatas, embeddings)
+                    except Exception as e:
+                        print(f"MyScale插入数据失败: {str(e)}")
+                
+                return [{"id": id, "content": doc, "metadata": meta, "url": url} 
+                       for id, doc, meta in zip(ids, documents, metadatas)]
+                   
         except Exception as e:
-            print(f"检索相似内容时出错: {str(e)}")
+            print(f"处理网页内容时出错: {str(e)}")
             return []
-
-
 
 class RelevanceCheckResult(BaseModel):
     is_relevant: bool
@@ -764,7 +493,7 @@ class HallucinationCheckResult(BaseModel):
 class HallucinationCheckTool:
     def __init__(self):
         self.llm = LLMConfig.create_llm()
-        self.system_prompt = """你是一个专门检测答案质量的助手。你需要判断生成的答案是否真实可靠地回答了用户的问题。
+        self.system_prompt = """你是一个专门检测答案质量的助手。你需要判断生成的答案是真实可靠地回答了用户的问题。
 
 请严格按照以下JSON格式返回结果：
 {
@@ -775,7 +504,7 @@ class HallucinationCheckTool:
 }
 
 评估标准：
-1. 答案是否直接回答了问题
+1. 答案是否直接回答问题
 2. 内容是否完全基于提供的文档
 3. 是否存在未经证实的推测
 4. 是否存在与文档矛盾的内容
@@ -864,7 +593,7 @@ class ChunkAbstractTool():
     "abstract_length": 摘要字数
 }
 
-提炼要求：
+提炼要：
 1. 保留最重要的信息和关键概念
 2. 确保与用户查询相关的内容被优先保留
 3. 去除冗余和次要信息
