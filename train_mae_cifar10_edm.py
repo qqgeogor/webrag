@@ -267,9 +267,9 @@ def visualize_reconstruction(model, images, mask_ratio=0.75, save_path='reconstr
         sigmas = get_sigmas_karras(1, model.sampler.sigma_min, model.sampler.sigma_max, rho=model.sampler.rho, device="cpu")
 
         latent,mask,ids_restore = model.forward_encoder(images,mask_ratio)
-        noised_x = torch.randn_like(images)
+        noised_x = torch.randn_like(images)*model.sampler.sigma_max
         pred1 = model.denoise(noised_x,latent,mask,ids_restore)
-        
+                
         pred1 = (1-mask.unsqueeze(-1)) * model.patchify(images) + mask.unsqueeze(-1) * model.patchify(pred1)
         pred1 = model.unpatchify(pred1)
 
