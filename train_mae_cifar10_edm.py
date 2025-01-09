@@ -26,6 +26,17 @@ class MaskedAutoencoderViT(nn.Module):
                  mlp_ratio=4., norm_layer=nn.LayerNorm, norm_pix_loss=False, use_checkpoint=False):
         super().__init__()
         self.use_checkpoint = use_checkpoint
+        self.embed_dim = embed_dim
+        self.patch_size = patch_size    
+        self.num_patches = (img_size // patch_size) ** 2
+        self.img_size = img_size
+        self.depth = depth
+        self.num_heads = num_heads
+        self.mlp_ratio = mlp_ratio
+        self.decoder_embed_dim = decoder_embed_dim
+        self.decoder_depth = decoder_depth
+        self.decoder_num_heads = decoder_num_heads
+        
         # --------------------------------------------------------------------------
         # MAE encoder specifics
         self.patch_embed = PatchEmbed(img_size, patch_size, in_chans, embed_dim)
@@ -135,6 +146,23 @@ class MaskedAutoencoderViT(nn.Module):
         mask = torch.gather(mask, dim=1, index=ids_restore)
 
         return x_masked, mask, ids_restore
+
+
+    def forward_feature(self, x):
+        x = self.patch_embed(x)
+        x = x + self.pos_embed[:, 1:, :]
+        
+        cls_token = self.cls_token + self.pos_embed[:, :1, :]
+        cls_tokens = cls_token.expand(x.shape[0], -1, -1)
+        x = torch.cat((cls_tokens, x), dim=1)
+
+        for blk in self.blocks:
+            if self.use_checkpoint:
+                x = torch.utils.checkpoint.checkpoint(blk, x)  # Enable gradient checkpointing
+            else:
+                x = blk(x)
+        x = self.norm(x)
+        return x
 
     def forward_encoder(self, x, mask_ratio):
         x = self.patch_embed(x)
@@ -269,7 +297,7 @@ def visualize_reconstruction(model, images, mask_ratio=0.75, save_path='reconstr
         latent,mask,ids_restore = model.forward_encoder(images,mask_ratio)
         noised_x = torch.randn_like(images)*model.sampler.sigma_max
         pred1 = model.denoise(noised_x,latent,mask,ids_restore)
-                
+
         pred1 = (1-mask.unsqueeze(-1)) * model.patchify(images) + mask.unsqueeze(-1) * model.patchify(pred1)
         pred1 = model.unpatchify(pred1)
 

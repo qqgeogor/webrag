@@ -19,8 +19,8 @@ class ViTForClassification(nn.Module):
         
     def forward(self, x):
         # Use encoder without masking
-        x,_,_ = self.encoder.forward_encoder(x)
-
+        x = self.encoder.forward_feature(x)
+        
         # Classification from CLS token
         x = x[:, 0]
         x = self.head(x)
@@ -65,8 +65,9 @@ def train_model(args):
         decoder_depth=4,
         decoder_num_heads=3,
         mlp_ratio=4,
+        use_checkpoint=True
     ).to(device)
-
+    
     # Load pretrained weights
     checkpoint = torch.load(args.mae_checkpoint, map_location=device)
     mae_model.load_state_dict(checkpoint['model_state_dict'])
