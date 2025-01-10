@@ -262,25 +262,16 @@ class KarrasSampler:
         return noisy, sigma
 
 
-    def get_random_sigma(self, u: torch.Tensor) -> torch.Tensor:
-        """
-        Get random sigma value from schedule using uniform random number
-        
-        Args:
-            t: Uniform random number between 0 and 1
-            
-        Returns:
-            Random sigma value from schedule
-        """
-        # Convert uniform to log-uniform distribution
-        log_sigma_min = math.log(self.sigma_min)
-        log_sigma_max = math.log(self.sigma_max)
-        
-        # Interpolate in log space
-        log_sigma = log_sigma_min + u * (log_sigma_max - log_sigma_min)
-        
-        # Convert back from log space
-        sigma = torch.exp(log_sigma)
+    def get_random_sigma(self, u: torch.Tensor, sampling='log') -> torch.Tensor:
+        if sampling == 'log':
+            # Log-uniform sampling
+            log_sigma_min = math.log(self.sigma_min)
+            log_sigma_max = math.log(self.sigma_max)
+            log_sigma = log_sigma_min + u * (log_sigma_max - log_sigma_min)
+            sigma = torch.exp(log_sigma)
+        else:
+            # Uniform sampling
+            sigma = self.sigma_min + u * (self.sigma_max - self.sigma_min)
         
         return sigma.view(-1,1,1,1)
 
