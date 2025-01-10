@@ -223,6 +223,48 @@ class KarrasSampler:
         out = model.unpatchify(out)
 
         return out,mask
+    
+
+    def sample_euler_single_class(
+        self,
+        model: Callable,
+        img: torch.Tensor,
+        sigmas: Optional[torch.Tensor] = None,
+        generator: Optional[torch.Generator] = None,
+        extra_args: dict = {},
+        callback: Optional[Callable] = None,
+        mask_ratio: float = 0.75
+    ) -> torch.Tensor:
+        """
+        Ancestral sampling with Euler method for single class
+        """
+        if sigmas is None:
+            sigmas = self.sigmas
+        sigmas = sigmas.to(img.device)
+        latent, mask, ids_restore = model.forward_encoder(img,mask_ratio)
+        
+        noise = torch.randn_like(img)
+        x = noise * self.sigma_max 
+        # Main sampling loop
+        for i in range(len(sigmas) - 1):
+            sigma = sigmas[i]
+
+            # Euler step
+            denoised = model.denoise(x, latent, mask,ids_restore)
+            d = (x - denoised) / sigma
+            dt = sigmas[i + 1] - sigma
+            x = x + d * dt
+            
+            
+            if callback is not None:
+                callback({'x': x, 'i': i, 'sigma': sigma})
+
+        # print(x.shape,mask.shape,img.shape, model.patchify(img).shape, model.patchify(x).shape)
+
+        # out = (1-mask.unsqueeze(-1)) * model.patchify(img) + mask.unsqueeze(-1) * model.patchify(x)
+        # out = model.unpatchify(x)
+        
+        return x,mask
 
     def add_noise(
         self,
