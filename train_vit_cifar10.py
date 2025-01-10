@@ -67,7 +67,7 @@ def train_model(args):
         mlp_ratio=4,
         use_checkpoint=True
     ).to(device)
-    
+
     # Load pretrained weights
     checkpoint = torch.load(args.mae_checkpoint, map_location=device)
     mae_model.load_state_dict(checkpoint['model_state_dict'])
@@ -167,7 +167,7 @@ def get_args_parser():
     parser = argparse.ArgumentParser('MAE fine-tuning for CIFAR-10')
     
     # Model parameters
-    parser.add_argument('--mae_checkpoint', default='./output/model_best.pth',
+    parser.add_argument('--mae_checkpoint', default='./output/checkpoint_epoch_200.pth',
                         help='Path to pretrained MAE checkpoint')
     
     # Training parameters
