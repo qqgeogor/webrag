@@ -32,13 +32,14 @@ def train_model(args):
 
     # Data preprocessing
     transform_train = transforms.Compose([
-        transforms.RandomResizedCrop(32),
+        transforms.RandomResizedCrop(args.img_size),
         transforms.RandomHorizontalFlip(),
         transforms.ToTensor(),
         transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)),
     ])
 
     transform_test = transforms.Compose([
+        transforms.Resize(args.img_size),
         transforms.ToTensor(),
         transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)),
     ])
@@ -56,8 +57,8 @@ def train_model(args):
 
     # Load pretrained MAE model
     mae_model = MaskedAutoencoderViT(
-        img_size=32,
-        patch_size=4,
+        img_size=args.img_size,
+        patch_size=args.patch_size,
         embed_dim=192,
         depth=12,
         num_heads=3,
@@ -65,13 +66,17 @@ def train_model(args):
         decoder_depth=4,
         decoder_num_heads=3,
         mlp_ratio=4,
-        use_checkpoint=True
+        use_checkpoint=False
     ).to(device)
 
-    # Load pretrained weights
-    checkpoint = torch.load(args.mae_checkpoint, map_location=device)
-    mae_model.load_state_dict(checkpoint['model_state_dict'])
-    print("Loaded pretrained MAE model")
+    try:
+        # Load pretrained weights
+        checkpoint = torch.load(args.mae_checkpoint, map_location=device)
+        mae_model.load_state_dict(checkpoint['model_state_dict'])
+        print("Loaded pretrained MAE model")
+    except Exception as e:
+        print(f"Error loading pretrained model: {e}")
+
 
     # Create classification model
     model = ViTForClassification(mae_model, num_classes=10).to(device)
@@ -173,12 +178,14 @@ def get_args_parser():
     # Training parameters
     parser.add_argument('--batch_size', default=128, type=int)
     parser.add_argument('--epochs', default=100, type=int)
-    parser.add_argument('--lr', default=1e-3, type=float)
+    parser.add_argument('--lr', default=1e-4, type=float)
     parser.add_argument('--min_lr', default=1e-6, type=float)
     parser.add_argument('--warmup_epochs', default=5, type=int)
     parser.add_argument('--warmup_lr_init', default=1e-6, type=float)
     parser.add_argument('--weight_decay', default=0.05, type=float)
-    
+    parser.add_argument('--img_size', default=32, type=int)
+    parser.add_argument('--patch_size', default=4, type=int)
+
     # System parameters
     parser.add_argument('--num_workers', default=8, type=int)
     parser.add_argument('--output_dir', default='./finetune_output')

@@ -18,6 +18,8 @@ import math
 from timm.scheduler.cosine_lr import CosineLRScheduler
 from timm.optim import create_optimizer_v2
 from karas_sampler import KarrasSampler,get_sigmas_karras
+from einops import rearrange
+import seaborn as sns
 
 class MaskedAutoencoderViT(nn.Module):
     def __init__(self, img_size=32, patch_size=4, in_chans=3,
@@ -253,6 +255,46 @@ class MaskedAutoencoderViT(nn.Module):
         pred = self.forward_decoder(latent, noised_image, mask, ids_restore)
         pred = self.unpatchify(pred)
         return pred
+    
+
+    def get_attention_maps(self, x, layer_idx=-1):
+        """
+        Get attention maps from a specific transformer layer
+        Args:
+            x: Input tensor
+            layer_idx: Index of transformer layer to visualize (-1 for last layer)
+        Returns:
+            attention_maps: [B, H, N, N] attention weights
+        """
+        B = x.shape[0]
+        
+        # Get patches
+        x = self.patch_embed(x)
+        
+        # Add positional embeddings
+        x = x + self.pos_embed[:, 1:, :]
+        
+        # Add cls token
+        cls_token = self.cls_token + self.pos_embed[:, :1, :]
+        cls_tokens = cls_token.expand(B, -1, -1)
+        x = torch.cat((cls_tokens, x), dim=1)
+        
+        # Pass through transformer blocks until target layer
+        target_block = self.blocks[layer_idx]
+        
+        # Get attention weights from target block
+        with torch.no_grad():
+            # Forward pass until attention
+            attn = target_block.attn
+            qkv = attn.qkv(x)
+            qkv = rearrange(qkv, 'b n (h d qkv) -> qkv b h n d', h=attn.num_heads, qkv=3)
+            q, k, v = qkv[0], qkv[1], qkv[2]   # b h n d
+            
+            # Calculate attention weights
+            attn_weights = (q @ k.transpose(-2, -1)) * attn.scale
+            attn_weights = attn_weights.softmax(dim=-1)  # b h n n
+            
+        return attn_weights
 
 def get_2d_sincos_pos_embed(embed_dim, grid_size, cls_token=False):
     """Generate 2D sinusoidal position embedding."""
@@ -297,6 +339,45 @@ def get_1d_sincos_pos_embed_from_grid(embed_dim, pos):
     emb = np.concatenate([emb_sin, emb_cos], axis=1)  # (M, D)
     return emb
 
+
+def visualize_attention(model, images, save_path='attention_maps', layer_idx=-1):
+    """Visualize attention maps for given images"""
+    os.makedirs(save_path, exist_ok=True)
+    
+    model.eval()
+    with torch.no_grad():
+        # Get attention weights
+        attn_weights = model.get_attention_maps(images, layer_idx=layer_idx)
+        
+        # Average over heads
+        attn_weights = attn_weights.mean(dim=1)  # [B, N, N]
+        
+        # Plot attention maps
+        n_images = min(4, images.shape[0])
+        fig, axes = plt.subplots(2, n_images, figsize=(4*n_images, 8))
+        
+        for i in range(n_images):
+            # Plot original image
+            img = images[i].cpu()
+            mean = torch.tensor([0.4914, 0.4822, 0.4465]).view(3, 1, 1)
+            std = torch.tensor([0.2023, 0.1994, 0.2010]).view(3, 1, 1)
+            img = img * std + mean
+            img = torch.clamp(img, 0., 1.)
+            axes[0, i].imshow(img.permute(1, 2, 0))
+            axes[0, i].axis('off')
+            axes[0, i].set_title('Original Image')
+            
+            # Plot attention map
+            attn = attn_weights[i].cpu()
+            sns.heatmap(attn.numpy(), ax=axes[1, i], cmap='viridis')
+            axes[1, i].set_title('Attention Map')
+        
+        plt.tight_layout()
+        plt.savefig(os.path.join(save_path, f'attention_map_layer_{layer_idx}.png'))
+        plt.close()
+        
+        return attn_weights
+    
 def visualize_reconstruction(model, images, mask_ratio=0.75, save_path='reconstructions'):
     """Visualize original, masked, and reconstructed images"""
     # Create save directory if it doesn't exist
@@ -335,6 +416,16 @@ def visualize_reconstruction(model, images, mask_ratio=0.75, save_path='reconstr
             # Denormalize from CIFAR-10 normalization
             mean = torch.tensor([0.4914, 0.4822, 0.4465]).view(3, 1, 1)
             std = torch.tensor([0.2023, 0.1994, 0.2010]).view(3, 1, 1)
+            img = img * std + mean
+            img = torch.clamp(img, 0., 1.)
+            return img
+        
+        # Normalize images for visualization
+        def normalize_image(img):
+            img = img.cpu()
+            # Denormalize from CIFAR-10 normalization
+            mean = torch.tensor([0.485, 0.456, 0.406]).view(3, 1, 1)
+            std = torch.tensor([0.229, 0.224, 0.225]).view(3, 1, 1)
             img = img * std + mean
             img = torch.clamp(img, 0., 1.)
             return img
@@ -397,6 +488,12 @@ def load_checkpoint(model, optimizer, scheduler, checkpoint_path):
 def get_args_parser():
     parser = argparse.ArgumentParser('MAE training for CIFAR-10', add_help=False)
     
+    # Add dataset arguments
+    parser.add_argument('--dataset', default='cifar10', type=str, choices=['cifar10', 'tiny-imagenet'],
+                        help='Dataset to use (cifar10 or tiny-imagenet)')
+    parser.add_argument('--data_path', default='c:/dataset', type=str,
+                        help='Path to dataset root directory')
+
     # Model parameters
     parser.add_argument('--model_name', default='mae_base', type=str,
                         help='Name of the model configuration')
@@ -497,16 +594,32 @@ def train_mae():
     print(f"Using device: {device}")
 
     # Data preprocessing
-    transform = transforms.Compose([
-        transforms.RandomHorizontalFlip(),
-        transforms.ToTensor(),
-        transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010))
-    ])
+    if args.dataset == 'cifar10':
+        transform = transforms.Compose([
+            transforms.RandomHorizontalFlip(),
+            transforms.ToTensor(),
+            transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010))
+        ])
+        
+        # Load CIFAR-10 dataset
+        trainset = torchvision.datasets.CIFAR10(root=args.data_path, train=True,
+                                              download=True, transform=transform)
+    else:  # tiny-imagenet
+        transform = transforms.Compose([
+            transforms.RandomResizedCrop(args.img_size),
+            transforms.RandomHorizontalFlip(),
+            transforms.ToTensor(),
+            transforms.Normalize(mean=[0.485, 0.456, 0.406], 
+                               std=[0.229, 0.224, 0.225])
+        ])
+        
+        # Load Tiny ImageNet dataset using ImageFolder
+        trainset = torchvision.datasets.ImageFolder(
+            root=os.path.join(args.data_path, 'tiny-imagenet-200/train'),
+            transform=transform
+        )
 
-    # Load datasets
-    trainset = torchvision.datasets.CIFAR10(root='c:/dataset', train=True,
-                                          download=True, transform=transform)
-    trainloader = DataLoader(trainset, batch_size=args.batch_size, 
+    trainloader = DataLoader(trainset, batch_size=args.batch_size,
                            shuffle=True, num_workers=args.num_workers)
 
     # Initialize model
@@ -633,7 +746,7 @@ def train_mae():
             plt.close()
             epoch_path = os.path.join(args.output_dir, f'model_epoch_{epoch}.pth')
             torch.save(model.state_dict(), epoch_path)
-            
+
             # Save best model
             if epoch_loss < best_loss:
                 best_loss = epoch_loss

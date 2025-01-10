@@ -192,7 +192,7 @@ class KarrasSampler:
         extra_args: dict = {},
         callback: Optional[Callable] = None,
         mask_ratio: float = 0.75
-    ) -> torch.Tensor:
+    ) -> Tuple[torch.Tensor,torch.Tensor]:
         """
         Ancestral sampling with Euler method
         """
@@ -217,8 +217,6 @@ class KarrasSampler:
             if callback is not None:
                 callback({'x': x, 'i': i, 'sigma': sigma})
 
-        # print(x.shape,mask.shape,img.shape, model.patchify(img).shape, model.patchify(x).shape)
-
         out = (1-mask.unsqueeze(-1)) * model.patchify(img) + mask.unsqueeze(-1) * model.patchify(x)
         out = model.unpatchify(out)
 
@@ -234,7 +232,7 @@ class KarrasSampler:
         extra_args: dict = {},
         callback: Optional[Callable] = None,
         mask_ratio: float = 0.75
-    ) -> torch.Tensor:
+    ) -> Tuple[torch.Tensor,torch.Tensor]:
         """
         Ancestral sampling with Euler method for single class
         """
@@ -259,10 +257,6 @@ class KarrasSampler:
             if callback is not None:
                 callback({'x': x, 'i': i, 'sigma': sigma})
 
-        # print(x.shape,mask.shape,img.shape, model.patchify(img).shape, model.patchify(x).shape)
-
-        # out = (1-mask.unsqueeze(-1)) * model.patchify(img) + mask.unsqueeze(-1) * model.patchify(x)
-        # out = model.unpatchify(x)
         
         return x,mask
 

@@ -18,12 +18,15 @@ import math
 from timm.scheduler.cosine_lr import CosineLRScheduler
 from timm.optim import create_optimizer_v2
 from karas_sampler import KarrasSampler,get_sigmas_karras
+import matplotlib.pyplot as plt
+import seaborn as sns
+from einops import rearrange
 
 class MaskedAutoencoderViT(nn.Module):
     def __init__(self, img_size=32, patch_size=4, in_chans=3,
                  embed_dim=192, depth=12, num_heads=3,
                  decoder_embed_dim=96, decoder_depth=4, decoder_num_heads=3,
-                 mlp_ratio=4., norm_layer=nn.LayerNorm, norm_pix_loss=False, use_checkpoint=False):
+                 mlp_ratio=4., norm_layer=nn.LayerNorm, norm_pix_loss=False, use_checkpoint=True):
         super().__init__()
         self.use_checkpoint = use_checkpoint
         self.embed_dim = embed_dim
@@ -250,6 +253,45 @@ class MaskedAutoencoderViT(nn.Module):
         pred = self.unpatchify(pred)
         return pred
 
+    def get_attention_maps(self, x, layer_idx=-1):
+        """
+        Get attention maps from a specific transformer layer
+        Args:
+            x: Input tensor
+            layer_idx: Index of transformer layer to visualize (-1 for last layer)
+        Returns:
+            attention_maps: [B, H, N, N] attention weights
+        """
+        B = x.shape[0]
+        
+        # Get patches
+        x = self.patch_embed(x)
+        
+        # Add positional embeddings
+        x = x + self.pos_embed[:, 1:, :]
+        
+        # Add cls token
+        cls_token = self.cls_token + self.pos_embed[:, :1, :]
+        cls_tokens = cls_token.expand(B, -1, -1)
+        x = torch.cat((cls_tokens, x), dim=1)
+        
+        # Pass through transformer blocks until target layer
+        target_block = self.blocks[layer_idx]
+        
+        # Get attention weights from target block
+        with torch.no_grad():
+            # Forward pass until attention
+            attn = target_block.attn
+            qkv = attn.qkv(x)
+            qkv = rearrange(qkv, 'b n (h d qkv) -> qkv b h n d', h=attn.num_heads, qkv=3)
+            q, k, v = qkv[0], qkv[1], qkv[2]   # b h n d
+            
+            # Calculate attention weights
+            attn_weights = (q @ k.transpose(-2, -1)) * attn.scale
+            attn_weights = attn_weights.softmax(dim=-1)  # b h n n
+            
+        return attn_weights
+
 def get_2d_sincos_pos_embed(embed_dim, grid_size, cls_token=False):
     """Generate 2D sinusoidal position embedding."""
     grid_h = np.arange(grid_size, dtype=np.float32)
@@ -307,13 +349,13 @@ def visualize_reconstruction(model, images, mask_ratio=0.75, save_path='reconstr
         latent,mask,ids_restore = model.forward_encoder(images,mask_ratio)
         noised_x = torch.randn_like(images)*model.sampler.sigma_max
         pred1 = model.denoise(noised_x,latent,mask,ids_restore)
-
-        pred1 = (1-mask.unsqueeze(-1)) * model.patchify(images) + mask.unsqueeze(-1) * model.patchify(pred1)
-        pred1 = model.unpatchify(pred1)
-
-
+        
+        # pred1 = (1-mask.unsqueeze(-1)) * model.patchify(images) + mask.unsqueeze(-1) * model.patchify(pred1)
+        # pred1 = model.unpatchify(pred1)
+        
+        
         sigmas = get_sigmas_karras(10, model.sampler.sigma_min, model.sampler.sigma_max, rho=model.sampler.rho, device="cpu")
-        pred2,mask = model.sampler.sample_euler(model,images,sigmas=sigmas,mask_ratio=mask_ratio)
+        pred2,mask = model.sampler.sample_euler_single_class(model,images,sigmas=sigmas,mask_ratio=mask_ratio)
         
         
         # Create masked images
@@ -438,7 +480,7 @@ def get_args_parser():
                         help='Random seed')
     parser.add_argument('--use_amp', action='store_true',
                         help='Use mixed precision training')
-    parser.add_argument('--use_checkpoint', action='store_true',
+    parser.add_argument('--use_checkpoint', action='store_true',default=True,
                         help='Use gradient checkpointing to save memory')
     
     # Logging and saving
@@ -478,6 +520,44 @@ def get_args_parser():
                         help='weight decay (default: 0.05)')
     
     return parser
+
+def visualize_attention(model, images, save_path='attention_maps', layer_idx=-1):
+    """Visualize attention maps for given images"""
+    os.makedirs(save_path, exist_ok=True)
+    
+    model.eval()
+    with torch.no_grad():
+        # Get attention weights
+        attn_weights = model.get_attention_maps(images, layer_idx=layer_idx)
+        
+        # Average over heads
+        attn_weights = attn_weights.mean(dim=1)  # [B, N, N]
+        
+        # Plot attention maps
+        n_images = min(4, images.shape[0])
+        fig, axes = plt.subplots(2, n_images, figsize=(4*n_images, 8))
+        
+        for i in range(n_images):
+            # Plot original image
+            img = images[i].cpu()
+            mean = torch.tensor([0.4914, 0.4822, 0.4465]).view(3, 1, 1)
+            std = torch.tensor([0.2023, 0.1994, 0.2010]).view(3, 1, 1)
+            img = img * std + mean
+            img = torch.clamp(img, 0., 1.)
+            axes[0, i].imshow(img.permute(1, 2, 0))
+            axes[0, i].axis('off')
+            axes[0, i].set_title('Original Image')
+            
+            # Plot attention map
+            attn = attn_weights[i].cpu()
+            sns.heatmap(attn.numpy(), ax=axes[1, i], cmap='viridis')
+            axes[1, i].set_title('Attention Map')
+        
+        plt.tight_layout()
+        plt.savefig(os.path.join(save_path, f'attention_map_layer_{layer_idx}.png'))
+        plt.close()
+        
+        return attn_weights
 
 def train_mae():
     args = get_args_parser().parse_args()
@@ -619,8 +699,15 @@ def train_mae():
                 if args.use_amp:
                     with autocast():
                         grid = visualize_reconstruction(model, imgs[:8].to(device))
+
+                        # Last layer attention
+                        attn_weights = visualize_attention(model, imgs[:8].to(device))
+
                 else:
                     grid = visualize_reconstruction(model, imgs[:8].to(device))
+                    
+                        # Last layer attention
+                    attn_weights = visualize_attention(model, imgs[:8].to(device))
                     
             plt.figure(figsize=(15, 5))
             plt.imshow(grid.permute(1, 2, 0))
