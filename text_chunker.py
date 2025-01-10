@@ -7,6 +7,10 @@ import networkx as nx
 from sklearn.cluster import AgglomerativeClustering
 from sentence_transformers import SentenceTransformer
 import numpy as np
+from utils import SentenceTransformerConfig
+import asyncio
+import json
+
 
 @dataclass
 class TextChunk:
@@ -17,8 +21,8 @@ class TextChunk:
 class TextChunker:
     def __init__(
         self,
-        max_chunk_size: int = 2000,
-        min_chunk_size: int = 100,
+        max_chunk_size: int = 2048,
+        min_chunk_size: int = 512,
         overlap_size: int = 50
     ):
         self.max_chunk_size = max_chunk_size
@@ -168,12 +172,12 @@ class SemanticChunker:
         self,
         model_name: str = 'all-MiniLM-L6-v2',
         min_chunk_size: int = 512,
-        max_chunk_size: int = 1024,
+        max_chunk_size: int = 2048,
         overlap_size: int = 50,
         embedding_model: SentenceTransformer = None
     ):
         if embedding_model is None:
-            self.model = SentenceTransformer(model_name,cache_folder='./cache')
+            self.model = SentenceTransformerConfig.create_model(model_name,cache_folder='./cache')
         else:
             self.model = embedding_model
         self.min_chunk_size = min_chunk_size
@@ -252,7 +256,7 @@ class SemanticChunker:
         for i, (sentence, cluster) in enumerate(zip(sentences, clusters)):
             current_chunk.append(sentence)
             chunk_text = ' '.join(current_chunk)
-            
+
             # 检查是否需要切分
             if (len(chunk_text) >= self.max_chunk_size or  # 达到最大长度
                 (i < len(sentences)-1 and clusters[i] != clusters[i+1] and  # 聚类边界
@@ -414,3 +418,62 @@ class SemanticChunker:
             ))
         
         return chunks
+    
+
+async def main():
+    
+
+    import os
+    import asyncio
+    from pathlib import Path
+    print('input_dir')
+    # Initialize the semantic chunker
+    chunker = SemanticChunker(
+        model_name='all-MiniLM-L6-v2',
+        min_chunk_size=512,
+        max_chunk_size=2048
+    )
+    
+    # Directory containing text files to process
+    input_dir = Path("corpora")
+    
+    # Create output directory if it doesn't exist
+    output_dir = Path("chunked_corpora")
+    output_dir.mkdir(exist_ok=True)
+
+    # Process each text file in the input directory
+    for file_path in input_dir.glob("*.md"):
+        try:
+            # Read the text file
+            with open(file_path, 'r', encoding='utf-8') as f:
+                text = f.read()
+
+            # Create a fake URL using the filename
+            url = f"file://{file_path.absolute()}"
+            
+            # Process the text using semantic chunking
+            chunks = await chunker.chunk_by_semantic_similarity(text, url)
+            print(len(chunks))
+            # Save the chunks to a JSONL file
+            output_file = output_dir / f"{file_path.stem}_chunks.jsonl"
+            with open(output_file, 'w', encoding='utf-8') as f:
+                
+                for chunk in chunks:
+                    print('chunk.content', chunk.content)
+                    # Convert chunk to dictionary and write as JSON line
+                    chunk_dict = {
+                        "content": chunk.content,
+                        "start_idx": chunk.start_idx,
+                        "end_idx": chunk.end_idx,
+                        "coherence_score": chunk.coherence_score,
+                        "sentences": chunk.sentences,
+                        "url": chunk.url
+                    }
+                    f.write(json.dumps(chunk_dict, ensure_ascii=False) + '\n')
+
+        except Exception as e:
+            print(f"Error processing {file_path.name}: {str(e)}")
+
+if __name__ == "__main__":
+    asyncio.run(main())
+

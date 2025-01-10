@@ -15,9 +15,9 @@ from typing import List, Dict
 import numpy as np
 import json
 import hashlib
-from utils import LLMConfig
+from utils import LLMConfig,SentenceTransformerConfig
 from text_chunker import SemanticChunker
-
+from logging_config import log_tool_usage
 
 # PaperInfo基础模型定义
 class PaperInfo(BaseModel):
@@ -104,8 +104,7 @@ class HybridSearch:
         self.initial_threshold = 0.7  # 初始相似度阈值
         
         if embedding_model is None:
-            model_name = 'all-MiniLM-L6-v2'
-            self.model = SentenceTransformer(model_name,cache_folder='./cache')
+            self.model = SentenceTransformerConfig.create_model()
         else:
             self.model = embedding_model
 
@@ -114,19 +113,7 @@ class HybridSearch:
         return self.model.encode(text)
 
 
-    @classmethod
-    async def create(
-        cls,
-        storage_type: StorageType = StorageType.MYSCALE,
-        collection_name: str = "web_search_content",
-        embedding_model=None
-    ):
-        instance = cls(storage_type, collection_name, embedding_model)
-        
-        instance.db_helper.create_table(collection_name)
-        
-        return instance
-
+    
     def _get_collection(self):
         return self._collection if self.storage_type == StorageType.CHROMA else self._myscale_client
 
@@ -221,7 +208,7 @@ class WebSearchTool:
         self.extractor = WebContentExtractor()
         self.model_name: str = 'all-MiniLM-L6-v2'
         
-        self.embedding_model = SentenceTransformer(self.model_name,cache_folder='./cache')
+        self.embedding_model = SentenceTransformerConfig.create_model(self.model_name)
         self.semantic_chunker = SemanticChunker(
             min_chunk_size=100,
             max_chunk_size=1000,
@@ -232,22 +219,14 @@ class WebSearchTool:
         self._client = httpx.AsyncClient()
         self.storage_type = storage_type
 
-    @classmethod
-    async def create(cls, storage_type: StorageType = StorageType.MYSCALE):
-        instance = cls(storage_type)
-        instance.hybrid_search = await HybridSearch.create(
+        self.hybrid_search = HybridSearch(
             storage_type=storage_type,
             collection_name="web_search_content",
-            embedding_model=instance.embedding_model
+            embedding_model=self.embedding_model
         )
-        return instance
 
-    @classmethod
-    async def search(cls, query: str, max_results: int = 5) -> List[dict]:
-        instance = await cls.create()
-        return await instance._search(query, max_results)
-
-    async def _search(self, query: str, max_results: int = 5) -> List[dict]:
+    @log_tool_usage
+    async def search(self, query: str, max_results: int = 5) -> List[dict]:
         headers = {
             "X-API-KEY": self.api_key,
             "Content-Type": "application/json",
@@ -282,6 +261,20 @@ class WebSearchTool:
             if chunks:
                 results.extend(chunks)
         
+        # search_results = await self.hybrid_search.hybrid_search(query, max_results)
+        
+        # results = [
+        #     {
+        #         "content": doc.content,
+        #         "url": doc.url or doc.metadata.get("url", "无可用URL"),
+        #         "metadata": doc.metadata
+        #     }
+        #     for doc in search_results.documents
+        # ]
+        return results  
+
+
+    async def retrieve(self, query: str, max_results: int = 5) -> List[dict]:
         search_results = await self.hybrid_search.hybrid_search(query, max_results)
         
         results = [
@@ -292,8 +285,7 @@ class WebSearchTool:
             }
             for doc in search_results.documents
         ]
-        
-        return results
+        return results  
 
     def _get_client(self):
         return self._client 

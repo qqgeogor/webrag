@@ -25,6 +25,8 @@ from tools import HallucinationCheckTool,ChunkAbstractTool
 from tools import HallucinationCheckResult
 from evaluation import RagasEvaluator
 from utils import LLMConfig
+
+
 from prompt import prompt_master
 MASTER_PROMPT = prompt_master
 
@@ -177,6 +179,7 @@ class KeyPoint(BaseModel):
 class WebSearchAgent(DeepSeekAgent):
     def __init__(self):
         super().__init__()
+        self.use_web_search = True
         self.tool = WebSearchTool()
         self.relevance_checker = RelevanceCheckTool()
         self.generator = GeneratorTool()
@@ -188,6 +191,14 @@ class WebSearchAgent(DeepSeekAgent):
         # self.semaphore = asyncio.Semaphore(self.max_concurrent)
         # self.search_semaphore = asyncio.Semaphore(self.max_concurrent)
         self.ragas_evaluator = RagasEvaluator()
+
+
+    def set_use_web_search(self, use_web_search: bool):
+        self.use_web_search = use_web_search    
+
+    def get_use_web_search(self):
+        return self.use_web_search
+
 
     @log_tool_usage
     async def extract_keypoints(self, query: str) -> List[KeyPoint]:
@@ -329,10 +340,17 @@ class WebSearchAgent(DeepSeekAgent):
         """搜索单个关键点"""
         # async with self.search_semaphore:
         try:
+            
             results = await self.tool.search(
                 query=keypoint.point,
                 max_results=self.max_results
             )
+            
+            results = await self.tool.retrieve(
+                query=keypoint.point,
+                max_results=self.max_results
+            )
+
             # 添加重要性信息到结果中，方便后续处理
             for result in results:
                 result['importance'] = keypoint.importance
@@ -456,16 +474,8 @@ class WebSearchAgent(DeepSeekAgent):
                 "quality_check": quality_check.model_dump()
             }
         
-
-        # # 评估答案
-        # eval_result = await self.ragas_evaluator.evaluate(
-        #     question=query,
-        #     answer=answer,
-        #     contexts=filtered_results_with_urls
-        # )
-
-        # state["eval_result"] = eval_result
-
+        contexts = [ c['content'] for c in filtered_results_with_urls]
+        
 
         state["next_agent"] = 'websearch_agent'
         state["final_answer"] = answer

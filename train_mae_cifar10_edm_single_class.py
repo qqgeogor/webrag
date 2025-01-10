@@ -673,7 +673,8 @@ def train_mae():
             
             if i % args.log_freq == args.log_freq - 1:
                 avg_loss = total_loss / num_batches
-                current_lr = scheduler.get_epoch_values(epoch)[0]
+                # current_lr = scheduler.get_epoch_values(epoch)[0]
+                current_lr = optimizer.param_groups[0]['lr']
                 print(f'Epoch: {epoch + 1}, Batch: {i + 1}, '
                       f'Loss: {avg_loss:.3f}, '
                       f'LR: {current_lr:.6f}')
