@@ -222,6 +222,91 @@ class KarrasSampler:
 
         return out,mask
     
+    
+    def stochastic_iterative_sampler(
+        self,
+        model: Callable,
+        img: torch.Tensor,
+        sigmas: Optional[torch.Tensor] = None,
+        generator: Optional[torch.Generator] = None,
+        extra_args: dict = {},
+        callback: Optional[Callable] = None,
+        mask_ratio: float = 0.75,
+        t_min=0.002,
+        t_max=80.0,
+        rho=7.0,
+        steps=40,
+    ):  
+        
+        latent, mask, ids_restore = model.forward_encoder(img, mask_ratio=mask_ratio)
+
+        x = torch.randn_like(img) * self.sigma_max
+
+        
+        ts = torch.linspace(0,steps-1,20)
+        t_max_rho = t_max ** (1 / rho)
+        t_min_rho = t_min ** (1 / rho)
+
+        for i in range(len(ts) - 1):
+            t = (t_max_rho + ts[i] / (steps - 1) * (t_min_rho - t_max_rho)) ** rho
+            x0 = model.denoise(x, latent, mask, ids_restore)
+            next_t = (t_max_rho + ts[i + 1] / (steps - 1) * (t_min_rho - t_max_rho)) ** rho
+            next_t = np.clip(next_t, t_min, t_max)
+            x = x0 + torch.randn_like(x) * (next_t**2 - t_min**2)**0.5
+
+        out = (1-mask.unsqueeze(-1)) * model.patchify(img) + mask.unsqueeze(-1) * model.patchify(x)
+        out = model.unpatchify(out)
+        return out,mask
+
+    def sample_heun(
+        self,
+        model: Callable,
+        img: torch.Tensor,
+        sigmas: Optional[torch.Tensor] = None,
+        generator: Optional[torch.Generator] = None,
+        extra_args: dict = {},
+        callback: Optional[Callable] = None,
+        mask_ratio: float = 0.75
+    ) -> Tuple[torch.Tensor,torch.Tensor]:
+        """
+        Heun's sampling method - a second-order variant of Euler method
+        """
+        if sigmas is None:
+            sigmas = self.sigmas
+        sigmas = sigmas.to(img.device)
+        latent, mask, ids_restore = model.forward_encoder(img, mask_ratio)
+        
+        noise = torch.randn_like(img)
+        x = noise * self.sigma_max 
+        
+        # Main sampling loop
+        for i in range(len(sigmas) - 1):
+            sigma = sigmas[i]
+            sigma_next = sigmas[i + 1]
+            
+            # First denoising step (Euler)
+            denoised = model.denoise(x, latent, mask, ids_restore)
+            d = (x - denoised) / sigma
+            dt = sigma_next - sigma
+            x_euler = x + d * dt
+            
+            # Second denoising step (Heun's correction)
+            if sigma_next > 0:
+                denoised_next = model.denoise(x_euler, latent, mask, ids_restore)
+                d_next = (x_euler - denoised_next) / sigma_next
+                d_avg = (d + d_next) / 2
+                x = x + d_avg * dt
+            else:
+                x = x_euler
+            
+            if callback is not None:
+                callback({'x': x, 'i': i, 'sigma': sigma})
+
+        out = (1-mask.unsqueeze(-1)) * model.patchify(img) + mask.unsqueeze(-1) * model.patchify(x)
+        out = model.unpatchify(out)
+
+        return out,mask
+
 
     def sample_euler_single_class(
         self,
@@ -281,7 +366,6 @@ class KarrasSampler:
         if noise is None:
             noise = torch.randn_like(x)
         
-        sigmas = self.sigmas.to(x.device)
         # Sample random sigma if not provided
         if sigma is None:
             # Generate random uniform values between 0 and 1

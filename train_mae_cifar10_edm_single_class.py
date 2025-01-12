@@ -377,6 +377,18 @@ def visualize_reconstruction(model, images, mask_ratio=0.75, save_path='reconstr
             img = torch.clamp(img, 0., 1.)
             return img
         
+                
+        # Normalize images for visualization
+        def normalize_image(img):
+            img = img.cpu()
+            # Denormalize from CIFAR-10 normalization
+            mean = torch.tensor([0.485, 0.456, 0.406]).view(3, 1, 1)
+            std = torch.tensor([0.229, 0.224, 0.225]).view(3, 1, 1)
+            img = img * std + mean
+            img = torch.clamp(img, 0., 1.)
+            return img
+        
+        
         # Prepare images for grid
         images = normalize_image(images)
         masked_images = normalize_image(masked_images)
@@ -434,6 +446,11 @@ def load_checkpoint(model, optimizer, scheduler, checkpoint_path):
 
 def get_args_parser():
     parser = argparse.ArgumentParser('MAE training for CIFAR-10', add_help=False)
+    
+    parser.add_argument('--dataset', default='cifar10', type=str, choices=['cifar10', 'tiny-imagenet','imagenet-100'],
+                        help='Dataset to use (cifar10 or tiny-imagenet or imagenet-100 )')
+    parser.add_argument('--data_path', default='c:/dataset', type=str,
+                        help='Path to dataset root directory')
     
     # Model parameters
     parser.add_argument('--model_name', default='mae_base', type=str,
@@ -573,17 +590,34 @@ def train_mae():
     print(f"Using device: {device}")
 
     # Data preprocessing
-    transform = transforms.Compose([
-        transforms.RandomHorizontalFlip(),
-        transforms.ToTensor(),
-        transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010))
-    ])
+    if args.dataset == 'cifar10':
+        transform = transforms.Compose([
+            transforms.RandomHorizontalFlip(),
+            transforms.ToTensor(),
+            transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010))
+        ])
+        
+        # Load CIFAR-10 dataset
+        trainset = torchvision.datasets.CIFAR10(root=args.data_path, train=True,
+                                              download=True, transform=transform)
+    else:  # tiny-imagenet
+        transform = transforms.Compose([
+            transforms.RandomResizedCrop(args.img_size),
+            transforms.RandomHorizontalFlip(),
+            transforms.ToTensor(),
+            transforms.Normalize(mean=[0.485, 0.456, 0.406], 
+                               std=[0.229, 0.224, 0.225])
+        ])
+        
+        # Load Tiny ImageNet dataset using ImageFolder
+        trainset = torchvision.datasets.ImageFolder(
+            root=os.path.join(args.data_path, f'{args.dataset}/train'),
+            transform=transform
+        )
 
-    # Load datasets
-    trainset = torchvision.datasets.CIFAR10(root='c:/dataset', train=True,
-                                          download=True, transform=transform)
-    trainloader = DataLoader(trainset, batch_size=args.batch_size, 
+    trainloader = DataLoader(trainset, batch_size=args.batch_size,
                            shuffle=True, num_workers=args.num_workers)
+    
 
     # Initialize model
     model = MaskedAutoencoderViT(
