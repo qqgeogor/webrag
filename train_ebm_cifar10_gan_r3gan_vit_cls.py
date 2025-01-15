@@ -208,7 +208,7 @@ class MaskedAutoencoderViT(nn.Module):
 
 
     def discriminate(self, x):
-        x = self.forward_feature(x)[:,0]
+        x = self.forward_feature(x)
         x = self.discriminator_head(x)
         return x
 
@@ -280,7 +280,7 @@ class MaskedAutoencoderViT(nn.Module):
         x_dec = self.patch_embed_decoder(noised_image)
 
         x_ = (1-mask.unsqueeze(-1)) * x_ + mask.unsqueeze(-1) * x_dec
-
+        
         
         x = torch.cat([x[:, :1, :], x_dec], dim=1)
 
@@ -461,6 +461,9 @@ class EnergyNet(nn.Module):
             if m.bias is not None:
                 nn.init.constant_(m.bias.data, 0)
     
+    def discriminate(self, x):
+        return self.forward(x)
+
     def forward(self, x):
         logits = self.net(x).squeeze()
         # print(x.shape)
@@ -604,6 +607,9 @@ class ResNetEnergyNet(nn.Module):
             if m.bias is not None:
                 nn.init.constant_(m.bias.data, 0)
     
+    def discriminate(self, x):
+        return self.forward(x)
+
     def forward(self, x):
         x = self.initial(x)
         x = self.layer1(x)
@@ -611,8 +617,8 @@ class ResNetEnergyNet(nn.Module):
         x = self.layer3(x)
         x = self.layer4(x)
         logits = self.energy_head(x).squeeze()
-        energy = -F.logsigmoid(logits)
-        return energy
+        
+        return logits
     
 class LangevinSampler:
     def __init__(self, n_steps=60, step_size=10.0, noise_scale=0.005):
@@ -757,16 +763,18 @@ def train_ebm_gan(args):
         depth=12, 
         num_heads=3
         ).to(device)
+    # 
     # discriminator = ResNetEnergyNet(img_channels=3, hidden_dim=64).to(device)
-    discriminator = MaskedAutoencoderViT(
-        img_size=32, 
-        patch_size=4, 
-        in_chans=3, 
-        embed_dim=192, 
-        decoder_embed_dim=args.latent_dim,
-        depth=12, 
-        num_heads=3
-        ).to(device)
+    discriminator = EnergyNet(img_channels=3, hidden_dim=64).to(device)
+    # discriminator = MaskedAutoencoderViT(
+    #     img_size=32, 
+    #     patch_size=4, 
+    #     in_chans=3, 
+    #     embed_dim=192, 
+    #     decoder_embed_dim=args.latent_dim,
+    #     depth=12, 
+    #     num_heads=3
+    #     ).to(device)
     
     # Optimizers
     g_optimizer = torch.optim.Adam(
