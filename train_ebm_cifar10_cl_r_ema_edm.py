@@ -16,7 +16,7 @@ import torch.nn.functional as F
 import copy
 
 from karas_sampler import KarrasSampler,get_sigmas_karras
-from ibot_ctrl import utils_ibot as utils
+import utils_ibot as utils
 import math
 from scipy.stats import norm
 import torch.distributed as dist
@@ -605,6 +605,14 @@ def train_ebm(args):
     # Load CIFAR-10
     trainset = torchvision.datasets.CIFAR10(root=args.data_path, train=True,
                                           download=True, transform=TwoCropsTransform(transform))
+
+
+    # Filter the dataset to only include class 1
+    class_1_indices = [i for i, label in enumerate(trainset.targets) if label == 1]
+    trainset.data = trainset.data[class_1_indices]
+    trainset.targets = [trainset.targets[i] for i in class_1_indices]
+    
+
     trainloader = DataLoader(trainset, batch_size=args.batch_size,
                            shuffle=True, num_workers=args.num_workers)
 
@@ -770,8 +778,8 @@ def get_args_parser():
     parser.add_argument('--noise_scale', default=0.005, type=float)
     
     # System parameters
-    parser.add_argument('--data_path', default='c:/dataset', type=str)
-    parser.add_argument('--output_dir', default='F:/output/cifar10-ebm-cl-r-ema-edm')
+    parser.add_argument('--data_path', default='/home/qianqian/repo/cnn_cl/data', type=str)
+    parser.add_argument('--output_dir', default='./output/cifar10-ebm-cl-r-ema-edm')
     parser.add_argument('--num_workers', default=4, type=int)
     parser.add_argument('--use_amp', action='store_true')
     parser.add_argument('--log_freq', default=100, type=int)

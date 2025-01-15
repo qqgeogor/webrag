@@ -354,7 +354,7 @@ def visualize_reconstruction(model, images, mask_ratio=0.75, save_path='reconstr
         # pred1 = model.unpatchify(pred1)
         
         
-        sigmas = get_sigmas_karras(10, model.sampler.sigma_min, model.sampler.sigma_max, rho=model.sampler.rho, device="cpu")
+        sigmas = get_sigmas_karras(40, model.sampler.sigma_min, model.sampler.sigma_max, rho=model.sampler.rho, device="cpu")
         pred2,mask = model.sampler.sample_euler_single_class(model,images,sigmas=sigmas,mask_ratio=mask_ratio)
         
         
@@ -431,95 +431,6 @@ def load_checkpoint(model, optimizer, scheduler, checkpoint_path):
         print(f"Resuming from epoch {start_epoch}")
         return start_epoch
     return 0
-
-def get_args_parser():
-    parser = argparse.ArgumentParser('MAE training for CIFAR-10', add_help=False)
-    
-    # Model parameters
-    parser.add_argument('--model_name', default='mae_base', type=str,
-                        help='Name of the model configuration')
-    parser.add_argument('--img_size', default=32, type=int,
-                        help='Input image size')
-    parser.add_argument('--patch_size', default=4, type=int,
-                        help='Patch size for image tokenization')
-    parser.add_argument('--embed_dim', default=192, type=int,
-                        help='Embedding dimension')
-    parser.add_argument('--depth', default=12, type=int,
-                        help='Depth of transformer')
-    parser.add_argument('--num_heads', default=3, type=int,
-                        help='Number of attention heads')
-    parser.add_argument('--decoder_embed_dim', default=96, type=int,
-                        help='Decoder embedding dimension')
-    parser.add_argument('--decoder_depth', default=4, type=int,
-                        help='Depth of decoder')
-    parser.add_argument('--decoder_num_heads', default=3, type=int,
-                        help='Number of decoder attention heads')
-    parser.add_argument('--mlp_ratio', default=4., type=float,
-                        help='MLP hidden dim ratio')
-    
-    # Training parameters
-    parser.add_argument('--epochs', default=200, type=int,
-                        help='Number of epochs to train')
-    parser.add_argument('--batch_size', default=128, type=int,
-                        help='Batch size per GPU')
-    parser.add_argument('--lr', default=1.5e-4, type=float,
-                        help='Learning rate')
-    parser.add_argument('--weight_decay', default=0.05, type=float,
-                        help='Weight decay')
-    parser.add_argument('--mask_ratio', default=0.75, type=float,
-                        help='Ratio of masked patches')
-    parser.add_argument('--warmup_epochs', default=10, type=int,
-                        help='Number of epochs for warmup')
-    
-    # System parameters
-    parser.add_argument('--num_workers', default=8, type=int,
-                        help='Number of data loading workers')
-    parser.add_argument('--device', default='cuda',
-                        help='Device to use for training')
-    parser.add_argument('--seed', default=0, type=int,
-                        help='Random seed')
-    parser.add_argument('--use_amp', action='store_true',
-                        help='Use mixed precision training')
-    parser.add_argument('--use_checkpoint', action='store_true',default=True,
-                        help='Use gradient checkpointing to save memory')
-    
-    # Logging and saving
-    parser.add_argument('--output_dir', default='./output_single_class',
-                        help='Path where to save checkpoints and logs')
-    parser.add_argument('--save_freq', default=5, type=int,
-                        help='Frequency of saving checkpoints')
-    parser.add_argument('--log_freq', default=100, type=int,
-                        help='Frequency of logging training progress')
-    
-    # Resume training
-    parser.add_argument('--resume', default='',
-                        help='Resume from checkpoint path')
-    parser.add_argument('--start_epoch', default=0, type=int,
-                        help='Start epoch when resuming')
-    
-    # Update LR schedule arguments
-    parser.add_argument('--min_lr', default=1e-6, type=float,
-                        help='Minimum learning rate after decay')
-    parser.add_argument('--num_cycles', default=1, type=int,
-                        help='Number of cycles for cosine decay')
-    parser.add_argument('--warmup_lr_init', default=1e-6, type=float,
-                        help='Initial learning rate for warmup')
-    
-    # Add optimizer arguments
-    parser.add_argument('--opt', default='adamw', type=str, metavar='OPTIMIZER',
-                        help='Optimizer (default: "adamw")')
-    parser.add_argument('--opt-eps', default=1e-8, type=float, metavar='EPSILON',
-                        help='Optimizer Epsilon (default: 1e-8)')
-    parser.add_argument('--opt-betas', default=[0.9, 0.999], type=float, nargs='+',
-                        help='Optimizer Betas (default: [0.9, 0.999])')
-    parser.add_argument('--clip-grad', type=float, default=None, metavar='NORM',
-                        help='Clip gradient norm (default: None, no clipping)')
-    parser.add_argument('--momentum', type=float, default=0.9, metavar='M',
-                        help='SGD momentum (default: 0.9)')
-    parser.add_argument('--weight-decay', type=float, default=0.05,
-                        help='weight decay (default: 0.05)')
-    
-    return parser
 
 def visualize_attention(model, images, save_path='attention_maps', layer_idx=-1):
     """Visualize attention maps for given images"""
@@ -727,6 +638,95 @@ def train_mae():
                 
         
         print(f'Epoch {epoch + 1} completed. Average loss: {epoch_loss:.3f}')
+
+def get_args_parser():
+    parser = argparse.ArgumentParser('MAE training for CIFAR-10', add_help=False)
+    
+    # Model parameters
+    parser.add_argument('--model_name', default='mae_base', type=str,
+                        help='Name of the model configuration')
+    parser.add_argument('--img_size', default=32, type=int,
+                        help='Input image size')
+    parser.add_argument('--patch_size', default=4, type=int,
+                        help='Patch size for image tokenization')
+    parser.add_argument('--embed_dim', default=192, type=int,
+                        help='Embedding dimension')
+    parser.add_argument('--depth', default=12, type=int,
+                        help='Depth of transformer')
+    parser.add_argument('--num_heads', default=3, type=int,
+                        help='Number of attention heads')
+    parser.add_argument('--decoder_embed_dim', default=96, type=int,
+                        help='Decoder embedding dimension')
+    parser.add_argument('--decoder_depth', default=4, type=int,
+                        help='Depth of decoder')
+    parser.add_argument('--decoder_num_heads', default=3, type=int,
+                        help='Number of decoder attention heads')
+    parser.add_argument('--mlp_ratio', default=4., type=float,
+                        help='MLP hidden dim ratio')
+    
+    # Training parameters
+    parser.add_argument('--epochs', default=200, type=int,
+                        help='Number of epochs to train')
+    parser.add_argument('--batch_size', default=128, type=int,
+                        help='Batch size per GPU')
+    parser.add_argument('--lr', default=1.5e-4, type=float,
+                        help='Learning rate')
+    parser.add_argument('--weight_decay', default=0.05, type=float,
+                        help='Weight decay')
+    parser.add_argument('--mask_ratio', default=0.75, type=float,
+                        help='Ratio of masked patches')
+    parser.add_argument('--warmup_epochs', default=10, type=int,
+                        help='Number of epochs for warmup')
+    
+    # System parameters
+    parser.add_argument('--num_workers', default=8, type=int,
+                        help='Number of data loading workers')
+    parser.add_argument('--device', default='cuda',
+                        help='Device to use for training')
+    parser.add_argument('--seed', default=0, type=int,
+                        help='Random seed')
+    parser.add_argument('--use_amp', action='store_true',
+                        help='Use mixed precision training')
+    parser.add_argument('--use_checkpoint', action='store_true',default=True,
+                        help='Use gradient checkpointing to save memory')
+    
+    # Logging and saving
+    parser.add_argument('--output_dir', default='./output_single_class',
+                        help='Path where to save checkpoints and logs')
+    parser.add_argument('--save_freq', default=5, type=int,
+                        help='Frequency of saving checkpoints')
+    parser.add_argument('--log_freq', default=100, type=int,
+                        help='Frequency of logging training progress')
+    
+    # Resume training
+    parser.add_argument('--resume', default='',
+                        help='Resume from checkpoint path')
+    parser.add_argument('--start_epoch', default=0, type=int,
+                        help='Start epoch when resuming')
+    
+    # Update LR schedule arguments
+    parser.add_argument('--min_lr', default=1e-6, type=float,
+                        help='Minimum learning rate after decay')
+    parser.add_argument('--num_cycles', default=1, type=int,
+                        help='Number of cycles for cosine decay')
+    parser.add_argument('--warmup_lr_init', default=1e-6, type=float,
+                        help='Initial learning rate for warmup')
+    
+    # Add optimizer arguments
+    parser.add_argument('--opt', default='adamw', type=str, metavar='OPTIMIZER',
+                        help='Optimizer (default: "adamw")')
+    parser.add_argument('--opt-eps', default=1e-8, type=float, metavar='EPSILON',
+                        help='Optimizer Epsilon (default: 1e-8)')
+    parser.add_argument('--opt-betas', default=[0.9, 0.999], type=float, nargs='+',
+                        help='Optimizer Betas (default: [0.9, 0.999])')
+    parser.add_argument('--clip-grad', type=float, default=None, metavar='NORM',
+                        help='Clip gradient norm (default: None, no clipping)')
+    parser.add_argument('--momentum', type=float, default=0.9, metavar='M',
+                        help='SGD momentum (default: 0.9)')
+    parser.add_argument('--weight-decay', type=float, default=0.05,
+                        help='weight decay (default: 0.05)')
+    
+    return parser
 
 if __name__ == '__main__':
     train_mae() 
