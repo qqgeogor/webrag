@@ -109,6 +109,9 @@ class MaskedAutoencoderViT(nn.Module):
         #     nn.LeakyReLU(0.2),
         #  )
 
+        self.discriminator_head = nn.Linear(embed_dim, 1)
+
+
         self.project_latent = nn.Sequential(
             # Initial projection
             nn.Linear(decoder_embed_dim, decoder_embed_dim * num_patches),
@@ -202,6 +205,13 @@ class MaskedAutoencoderViT(nn.Module):
                 x = blk(x)
         x = self.norm(x)
         return x
+
+
+    def discriminate(self, x):
+        x = self.forward_feature(x)[:,0]
+        x = self.discriminator_head(x)
+        return x
+
 
     def forward_encoder(self, x, mask_ratio=0.75):
         x = self.patch_embed(x)
@@ -748,7 +758,15 @@ def train_ebm_gan(args):
         num_heads=3
         ).to(device)
     # discriminator = ResNetEnergyNet(img_channels=3, hidden_dim=64).to(device)
-    discriminator = EnergyNet(img_channels=3, hidden_dim=64).to(device)
+    discriminator = MaskedAutoencoderViT(
+        img_size=32, 
+        patch_size=4, 
+        in_chans=3, 
+        embed_dim=192, 
+        decoder_embed_dim=args.latent_dim,
+        depth=12, 
+        num_heads=3
+        ).to(device)
     
     # Optimizers
     g_optimizer = torch.optim.Adam(
@@ -811,8 +829,8 @@ def train_ebm_gan(args):
                 fake_samples = generator.generate(z,contexts).detach().requires_grad_(True)
                 
                 # Compute energies
-                real_energy = discriminator(real_samples)
-                fake_energy = discriminator(fake_samples)
+                real_energy = discriminator.discriminate(real_samples)
+                fake_energy = discriminator.discriminate(fake_samples)
                 
                 realistic_logits = real_energy - fake_energy
                 d_loss = F.softplus(-realistic_logits)
@@ -846,8 +864,8 @@ def train_ebm_gan(args):
             # loss_contrastive = simsiam_loss(p1.squeeze(1),p2.squeeze(1),scale=1e-2).mean()
 
 
-            fake_energy = discriminator(fake_samples)
-            real_energy = discriminator(real_samples)
+            fake_energy = discriminator.discriminate(fake_samples)
+            real_energy = discriminator.discriminate(real_samples)
 
             realistic_logits = fake_energy - real_energy
             g_loss = F.softplus(-realistic_logits)
@@ -922,7 +940,7 @@ def compute_gradient_penalty(discriminator, real_samples, fake_samples, device):
     alpha = torch.rand((real_samples.size(0), 1, 1, 1), device=device)
     interpolates = (alpha * real_samples + (1 - alpha) * fake_samples).requires_grad_(True)
     
-    d_interpolates = discriminator(interpolates)
+    d_interpolates = discriminator.discriminate(interpolates)
     gradients = torch.autograd.grad(
         outputs=d_interpolates,
         inputs=interpolates,
