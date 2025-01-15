@@ -13,9 +13,13 @@ from tqdm import tqdm
 import argparse
 import torch.nn.functional as F
 
+
+
 def zero_centered_gradient_penalty(samples, critics):
-    grad, = torch.autograd.grad(outputs=critics.sum(), inputs=samples, create_graph=True)
+    critics = R(critics)
+    grad, = torch.autograd.grad(outputs=critics, inputs=samples, create_graph=True)
     return grad.square().sum([1, 2, 3])
+
 
 class EnergyNet(nn.Module):
     def __init__(self, img_channels=3, hidden_dim=64):
@@ -24,47 +28,28 @@ class EnergyNet(nn.Module):
         self.net = nn.Sequential(
             # Initial conv: [B, 3, 32, 32] -> [B, 64, 16, 16]
             nn.Conv2d(img_channels, hidden_dim, 4, 2, 1),
-            # nn.GroupNorm(8, hidden_dim),  # Add normalization
             nn.LeakyReLU(0.2),
             
             # [B, 64, 16, 16] -> [B, 128, 8, 8]
             nn.Conv2d(hidden_dim, hidden_dim * 2, 4, 2, 1),
-            # nn.GroupNorm(8, hidden_dim * 2),  # Add normalization
             nn.LeakyReLU(0.2),
             
             # [B, 128, 8, 8] -> [B, 256, 4, 4]
             nn.Conv2d(hidden_dim * 2, hidden_dim * 4, 4, 2, 1),
-            # nn.GroupNorm(8, hidden_dim * 4),  # Add normalization
             nn.LeakyReLU(0.2),
             
             # [B, 256, 4, 4] -> [B, 512, 2, 2]
             nn.Conv2d(hidden_dim * 4, hidden_dim * 8, 4, 2, 1),
-            # nn.GroupNorm(8, hidden_dim * 8),  # Add normalization
             nn.LeakyReLU(0.2),
             
             # Final conv to scalar energy: [B, 512, 2, 2] -> [B, 1, 1, 1]
-            nn.Conv2d(hidden_dim * 8, 1, 2, 1, 0)
+            nn.Conv2d(hidden_dim * 8, 128, 2, 1, 0)
         )
-        
-        # Initialize weights properly
-        self.apply(self._init_weights)
-    
-    def _init_weights(self, m):
-        if isinstance(m, nn.Conv2d):
-            nn.init.orthogonal_(m.weight.data)
-            if m.bias is not None:
-                nn.init.constant_(m.bias.data, 0)
     
     def forward(self, x):
-        logits = self.net(x).squeeze()
-        # print(x.shape)
-        # logits = self.head(logits)
-        # Add regularization term to prevent collapse
-        # reg_term = 0.1 * (logits ** 2).mean()
-        # logits = logits# + reg_term
-        #logits = -F.logsigmoid(logits)
-        return logits
-
+        Z = self.net(x).squeeze()
+        #Z = R(Z)
+        return Z
 
 class ResBlock(nn.Module):
     def __init__(self, in_channels, out_channels, stride=1):
@@ -111,8 +96,8 @@ def mcr(Z1,Z2):
     return R(torch.cat([Z1,Z2],dim=0))-0.5*R(Z1)-0.5*R(Z2)
 
 
-# def dino_loss(Z1,Z2,scale_Z1=1e-2):
-#     return -R(Z1).mean()*scale_Z1 + (1 - F.cosine_similarity(Z1,Z2,dim=-1)).mean()
+def dino_loss(Z1,Z2,scale_Z1=1e-2):
+    return -R(Z1).mean()*scale_Z1 + (1 - F.cosine_similarity(Z1,Z2,dim=-1)).mean()
 
 
 def tcr_loss(Z1,Z2):
@@ -162,7 +147,6 @@ class TCREnergyNet(nn.Module):
         Z = self.energy_head(x).squeeze()
         Z = R(Z)
         return Z
-
 
 class ResNetEnergyNet(nn.Module):
     def __init__(self, img_channels=3, hidden_dim=64):
@@ -315,18 +299,18 @@ def train_ebm_gan(args):
     trainset = torchvision.datasets.CIFAR10(root=args.data_path, train=True,
                                           download=True, transform=transform)
     
-    # # Filter the dataset to only include class 1
-    # class_1_indices = [i for i, label in enumerate(trainset.targets) if label == 1]
-    # trainset.data = trainset.data[class_1_indices]
-    # trainset.targets = [trainset.targets[i] for i in class_1_indices]
+    # Filter the dataset to only include class 1
+    class_1_indices = [i for i, label in enumerate(trainset.targets) if label == 1]
+    trainset.data = trainset.data[class_1_indices]
+    trainset.targets = [trainset.targets[i] for i in class_1_indices]
     
-
+    
     trainloader = DataLoader(trainset, batch_size=args.batch_size,
                            shuffle=True, num_workers=args.num_workers)
 
     # Initialize models
     generator = Generator(latent_dim=args.latent_dim, hidden_dim=64).to(device)
-    # discriminator = ResNetEnergyNet(img_channels=3, hidden_dim=64).to(device)
+    discriminator = ResNetEnergyNet(img_channels=3, hidden_dim=64).to(device)
     discriminator = EnergyNet(img_channels=3, hidden_dim=64).to(device)
     
     # Optimizers
@@ -353,7 +337,6 @@ def train_ebm_gan(args):
         eta_min=args.min_lr
     )
     start_epoch = 0
-    
     # Add checkpoint loading logic
     if args.resume:
         checkpoint_path = args.resume
@@ -384,6 +367,7 @@ def train_ebm_gan(args):
                 
                 # Generate fake samples
                 z = torch.randn(batch_size, args.latent_dim, device=device)
+
                 real_samples = real_samples.detach().requires_grad_(True)
                 fake_samples = generator(z).detach().requires_grad_(True)
                 
@@ -391,17 +375,14 @@ def train_ebm_gan(args):
                 real_energy = discriminator(real_samples)
                 fake_energy = discriminator(fake_samples)
                 
-                realistic_logits = real_energy - fake_energy
-                d_loss = F.softplus(-realistic_logits)
+                r1 = zero_centered_gradient_penalty(real_samples, real_energy).mean()
+                r2 = zero_centered_gradient_penalty(fake_samples, fake_energy).mean()
+                d_loss = -mcr(real_energy,fake_energy) + args.gp_weight/2 * (r1 + r2)
                 # Improved EBM-GAN discriminator loss
-                # d_loss = (F.softplus(real_energy) + (-fake_energy))
+                # d_loss = ((real_energy) + (-fake_energy)).mean()
                 
-                r1 = zero_centered_gradient_penalty(real_samples, real_energy)
-                r2 = zero_centered_gradient_penalty(fake_samples, fake_energy)
-
-                d_loss = d_loss + args.gp_weight/2 * (r1 + r2)
-                d_loss = d_loss.mean()
-
+                # d_loss = -mcr(real_energy,fake_energy)
+                
                 # # Add gradient penalty
                 # gp = compute_gradient_penalty(discriminator, real_samples, fake_samples, device)
                 # d_loss = d_loss + args.gp_weight * gp
@@ -415,15 +396,17 @@ def train_ebm_gan(args):
             # Generate new fake samples
             z = torch.randn(batch_size, args.latent_dim, device=device)
             fake_samples = generator(z)
-            fake_energy = discriminator(fake_samples)
+            
+            
             real_energy = discriminator(real_samples)
-
-            realistic_logits = fake_energy - real_energy
-            g_loss = F.softplus(-realistic_logits)
-            g_loss = g_loss.mean()
+            fake_energy = discriminator(fake_samples)
+            
             
             # Improved generator loss
             # g_loss = (fake_energy).mean()
+            g_loss = mcr(real_energy,fake_energy)
+            # g_loss += -R(real_energy)*0.2
+            # g_loss += (R(fake_energy)-R(real_energy)).abs().mean()*0.2
             
             g_loss.backward()
             g_optimizer.step()
@@ -433,9 +416,9 @@ def train_ebm_gan(args):
                 current_d_lr = d_optimizer.param_groups[0]['lr']
                 print(f'Epoch [{epoch}/{args.epochs}], Step [{i}/{len(trainloader)}], '
                       f'D_loss: {d_loss.item():.4f}, G_loss: {g_loss.item():.4f}, '
-                      f'r1: {r1.mean().item():.4f}, r2: {r2.mean().item():.4f}, '
-                      f'Real Energy: {real_energy.mean().item():.4f}, '
-                      f'Fake Energy: {fake_energy.mean().item():.4f}, '
+                      f'r1: {r1.item():.4f}, r2: {r2.item():.4f}, '
+                      f'Real Energy: {R(real_energy).item():.4f}, '
+                      f'Fake Energy: {R(fake_energy).mean().item():.4f}, '
                       f'G_LR: {current_g_lr:.6f}, D_LR: {current_d_lr:.6f}'
                       )
         
@@ -456,6 +439,7 @@ def train_ebm_gan(args):
                 'd_scheduler_state_dict': d_scheduler.state_dict(),
             }, os.path.join(args.output_dir, f'ebm_gan_checkpoint_{epoch}.pth'))
 
+
 def save_gan_samples(generator, discriminator, epoch, output_dir, device, n_samples=36):
     generator.eval()
     discriminator.eval()
@@ -471,6 +455,7 @@ def save_gan_samples(generator, discriminator, epoch, output_dir, device, n_samp
         plt.axis('off')
         plt.savefig(os.path.join(output_dir, f'gan_samples_epoch_{epoch}.png'))
         plt.close()
+
 
 def compute_gradient_penalty(discriminator, real_samples, fake_samples, device):
     """Compute gradient penalty for improved training stability"""
@@ -496,11 +481,11 @@ def get_args_parser():
     
     # Add GAN-specific parameters
     parser.add_argument('--latent_dim', default=100, type=int)
-    parser.add_argument('--g_lr', default=1e-4, type=float)
-    parser.add_argument('--d_lr', default=3e-4, type=float)
-    parser.add_argument('--n_critic', default=5, type=int,
+    parser.add_argument('--g_lr', default=1.5e-4, type=float)
+    parser.add_argument('--d_lr', default=1.5e-4, type=float)
+    parser.add_argument('--n_critic', default=2, type=int,
                         help='Number of discriminator updates per generator update')
-    parser.add_argument('--gp_weight', default=0.05, type=float,
+    parser.add_argument('--gp_weight', default=1000, type=float,
                         help='Weight of gradient penalty')
     
     # Modify learning rates
@@ -514,11 +499,11 @@ def get_args_parser():
     parser.add_argument('--batch_size', default=128, type=int)
     parser.add_argument('--lr', default=1e-4, type=float)
     parser.add_argument('--data_path', default='c:/dataset', type=str)
-    parser.add_argument('--output_dir', default='F:/output/cifar10-ebm-gan-r3gan')
+    parser.add_argument('--output_dir', default='F:/output/cifar10-ebm-gan-r3mcr-car')
     parser.add_argument('--num_workers', default=4, type=int)
     parser.add_argument('--use_amp', action='store_true')
     parser.add_argument('--log_freq', default=100, type=int)
-    parser.add_argument('--save_freq', default=1, type=int)
+    parser.add_argument('--save_freq', default=10, type=int)
     
     # Add learning rate scheduling parameters
     parser.add_argument('--min_lr', default=1e-6, type=float,

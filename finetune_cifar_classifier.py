@@ -6,15 +6,18 @@ from torch.utils.data import DataLoader
 import os
 from pathlib import Path
 from tqdm import tqdm
-from train_ebm_cifar10_cl import SimSiamModel
+from train_ebm_cifar10_cl_r_ema_edm import SimSiamModel
+from torch.cuda.amp import autocast, GradScaler
 
 class CifarClassifier(nn.Module):
-    def __init__(self, backbone, num_classes=10):
+    def __init__(self, backbone, num_classes=10,freeze_backbone=False):
         super().__init__()
         self.backbone = backbone
+        self.freeze_backbone = freeze_backbone
         # Freeze backbone
-        for param in self.backbone.parameters():
-            param.requires_grad = False
+        if freeze_backbone:
+            for param in self.backbone.parameters():
+                param.requires_grad = False
             
         self.classifier = nn.Sequential(
             nn.Linear(128, 512),
@@ -25,7 +28,10 @@ class CifarClassifier(nn.Module):
         
     def forward(self, x):
         # Get features from the backbone
-        with torch.no_grad():
+        if self.freeze_backbone:
+            with torch.no_grad():
+                features = self.backbone.encoder(x).squeeze()
+        else:
             features = self.backbone.encoder(x).squeeze()
         
         # Pass through classifier
@@ -49,6 +55,9 @@ def evaluate(model, dataloader, device):
 def finetune(args):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
+    
+    # Initialize GradScaler for AMP
+    scaler = GradScaler(enabled=args.use_amp)
 
     # Data preprocessing for training
     train_transform = transforms.Compose([
@@ -78,12 +87,15 @@ def finetune(args):
     # Load pretrained SimSiam model
     backbone = SimSiamModel(img_channels=3, hidden_dim=64).to(device)
     checkpoint = torch.load(args.pretrained_path)
-    backbone.load_state_dict(checkpoint['model_state_dict'])
+    if args.encoder_type == 'student':
+        backbone.load_state_dict(checkpoint['model_state_dict'],strict=False)
+    else:
+        backbone.load_state_dict(checkpoint['teacher_model_state_dict'],strict=False)
     
     # Create classifier
-    model = CifarClassifier(backbone).to(device)
+    model = CifarClassifier(backbone,freeze_backbone=args.freeze_backbone).to(device)
     criterion = nn.CrossEntropyLoss()
-    optimizer = torch.optim.Adam(model.classifier.parameters(), lr=args.lr)
+    optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
     
     best_acc = 0
     
@@ -95,14 +107,17 @@ def finetune(args):
         for i, (images, labels) in enumerate(tqdm(trainloader)):
             images, labels = images.to(device), labels.to(device)
             
-            # Forward pass
-            outputs = model(images)
-            loss = criterion(outputs, labels)
+            # Forward pass with autocast、
+            args.use_amp = True
+            with autocast(enabled=args.use_amp):
+                outputs = model(images)
+                loss = criterion(outputs, labels)
             
-            # Backward pass
+            # Backward pass with scaler
             optimizer.zero_grad()
-            loss.backward()
-            optimizer.step()
+            scaler.scale(loss).backward()
+            scaler.step(optimizer)
+            scaler.update()
             
             running_loss += loss.item()
             
@@ -110,7 +125,7 @@ def finetune(args):
                 print(f'Epoch [{epoch}/{args.epochs}], Step [{i}/{len(trainloader)}], '
                       f'Loss: {loss.item():.4f}')
         
-        # Evaluate
+        # Evaluate (no need for autocast in eval mode)
         test_acc = evaluate(model, testloader, device)
         print(f'Epoch [{epoch}/{args.epochs}], Test Accuracy: {test_acc:.2f}%')
         
@@ -121,6 +136,7 @@ def finetune(args):
                 'epoch': epoch,
                 'model_state_dict': model.state_dict(),
                 'optimizer_state_dict': optimizer.state_dict(),
+                'scaler_state_dict': scaler.state_dict(),  # Save scaler state
                 'accuracy': test_acc,
             }, os.path.join(args.output_dir, 'best_classifier.pth'))
         
@@ -130,6 +146,7 @@ def finetune(args):
                 'epoch': epoch,
                 'model_state_dict': model.state_dict(),
                 'optimizer_state_dict': optimizer.state_dict(),
+                'scaler_state_dict': scaler.state_dict(),  # Save scaler state
                 'accuracy': test_acc,
             }, os.path.join(args.output_dir, f'classifier_checkpoint_{epoch}.pth'))
 
@@ -141,7 +158,9 @@ def get_args_parser():
     parser.add_argument('--epochs', default=100, type=int)
     parser.add_argument('--batch_size', default=256, type=int)
     parser.add_argument('--lr', default=1e-3, type=float)
-    
+    parser.add_argument('--encoder_type', default='student', type=str)
+    parser.add_argument('--freeze_backbone', action='store_true',default=False,
+                       help='Freeze backbone during training')
     # System parameters
     parser.add_argument('--data_path', default='c:/dataset', type=str)
     parser.add_argument('--output_dir', default='F:/output/cifar10-classifier')
@@ -150,6 +169,10 @@ def get_args_parser():
     parser.add_argument('--num_workers', default=4, type=int)
     parser.add_argument('--log_freq', default=100, type=int)
     parser.add_argument('--save_freq', default=10, type=int)
+    
+    # Add AMP argument
+    parser.add_argument('--use_amp', action='store_true',
+                       help='Use Automatic Mixed Precision training')
     
     return parser
 

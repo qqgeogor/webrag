@@ -299,10 +299,10 @@ def train_ebm_gan(args):
     trainset = torchvision.datasets.CIFAR10(root=args.data_path, train=True,
                                           download=True, transform=transform)
     
-    # Filter the dataset to only include class 1
-    class_1_indices = [i for i, label in enumerate(trainset.targets) if label == 1]
-    trainset.data = trainset.data[class_1_indices]
-    trainset.targets = [trainset.targets[i] for i in class_1_indices]
+    # # Filter the dataset to only include class 1
+    # class_1_indices = [i for i, label in enumerate(trainset.targets) if label == 1]
+    # trainset.data = trainset.data[class_1_indices]
+    # trainset.targets = [trainset.targets[i] for i in class_1_indices]
     
     
     trainloader = DataLoader(trainset, batch_size=args.batch_size,
@@ -336,7 +336,7 @@ def train_ebm_gan(args):
         T_max=args.epochs,
         eta_min=args.min_lr
     )
-    
+    start_epoch = 0
     # Add checkpoint loading logic
     if args.resume:
         checkpoint_path = args.resume
@@ -353,7 +353,7 @@ def train_ebm_gan(args):
             print(f"Resuming from epoch {start_epoch}")
     
     # Training loop
-    for epoch in range(args.epochs):
+    for epoch in range(start_epoch,args.epochs):
         generator.train()
         discriminator.train()
         
@@ -375,12 +375,12 @@ def train_ebm_gan(args):
                 real_energy = discriminator(real_samples)
                 fake_energy = discriminator(fake_samples)
                 
-                r1 = zero_centered_gradient_penalty(real_samples, real_energy)
-                r2 = zero_centered_gradient_penalty(fake_samples, fake_energy)
-                d_loss = -mcr(real_energy,fake_energy) + args.gp_weight/2 * (r1 + r2).mean()
+                r1 = zero_centered_gradient_penalty(real_samples, real_energy).mean()
+                r2 = zero_centered_gradient_penalty(fake_samples, fake_energy).mean()
+                d_loss = -mcr(real_energy,fake_energy) + args.gp_weight/2 * (r1 + r2)
                 # Improved EBM-GAN discriminator loss
                 # d_loss = ((real_energy) + (-fake_energy)).mean()
-
+                
                 # d_loss = -mcr(real_energy,fake_energy)
                 
                 # # Add gradient penalty
@@ -405,8 +405,9 @@ def train_ebm_gan(args):
             # Improved generator loss
             # g_loss = (fake_energy).mean()
             g_loss = mcr(real_energy,fake_energy)
-            g_loss += -R(fake_energy)*0.2
-
+            # g_loss += -R(real_energy)*0.2
+            # g_loss += (R(fake_energy)-R(real_energy)).abs().mean()*0.2
+            
             g_loss.backward()
             g_optimizer.step()
             
@@ -415,6 +416,7 @@ def train_ebm_gan(args):
                 current_d_lr = d_optimizer.param_groups[0]['lr']
                 print(f'Epoch [{epoch}/{args.epochs}], Step [{i}/{len(trainloader)}], '
                       f'D_loss: {d_loss.item():.4f}, G_loss: {g_loss.item():.4f}, '
+                      f'r1: {r1.item():.4f}, r2: {r2.item():.4f}, '
                       f'Real Energy: {R(real_energy).item():.4f}, '
                       f'Fake Energy: {R(fake_energy).mean().item():.4f}, '
                       f'G_LR: {current_g_lr:.6f}, D_LR: {current_d_lr:.6f}'
@@ -483,7 +485,7 @@ def get_args_parser():
     parser.add_argument('--d_lr', default=1e-4, type=float)
     parser.add_argument('--n_critic', default=1, type=int,
                         help='Number of discriminator updates per generator update')
-    parser.add_argument('--gp_weight', default=10.0, type=float,
+    parser.add_argument('--gp_weight', default=1000, type=float,
                         help='Weight of gradient penalty')
     
     # Modify learning rates
@@ -496,12 +498,12 @@ def get_args_parser():
     parser.add_argument('--epochs', default=1200, type=int)
     parser.add_argument('--batch_size', default=128, type=int)
     parser.add_argument('--lr', default=1e-4, type=float)
-    parser.add_argument('--data_path', default='/home/qianqian/repo/cnn_cl/data', type=str)
-    parser.add_argument('--output_dir', default='./output/cifar10-ebm-gan-r3mcr')
+    parser.add_argument('--data_path', default='c:/dataset', type=str)
+    parser.add_argument('--output_dir', default='F:/output/cifar10-ebm-gan-r3mcr')
     parser.add_argument('--num_workers', default=4, type=int)
     parser.add_argument('--use_amp', action='store_true')
     parser.add_argument('--log_freq', default=100, type=int)
-    parser.add_argument('--save_freq', default=1, type=int)
+    parser.add_argument('--save_freq', default=10, type=int)
     
     # Add learning rate scheduling parameters
     parser.add_argument('--min_lr', default=1e-6, type=float,

@@ -222,7 +222,42 @@ class KarrasSampler:
 
         return out,mask
     
+    @torch.no_grad()
+    def sample_euler_unet(
+        self,
+        model: Callable,
+        img: torch.Tensor,
+        sigmas: Optional[torch.Tensor] = None,
+        generator: Optional[torch.Generator] = None,
+        extra_args: dict = {},
+        callback: Optional[Callable] = None,
+        mask_ratio: float = 0.75
+    ) -> Tuple[torch.Tensor,torch.Tensor]:
+        """
+        Sampling with Euler method
+        """
+        if sigmas is None:
+            sigmas = self.sigmas
+        sigmas = sigmas.to(img.device).view(-1,1,1,1)
+        
+        noise = torch.randn_like(img)
+        x = noise * self.sigma_max 
+        # Main sampling loop
+        for i in range(len(sigmas) - 1):
+            sigma = sigmas[i]
+
+            # Euler step
+            denoised,_,_,_ = model(x,x)
+            d = (x - denoised) / sigma
+            dt = sigmas[i + 1] - sigma
+            x = x + d * dt
+            
+            
+            if callback is not None:
+                callback({'x': x, 'i': i, 'sigma': sigma})
+        return x
     
+
     def stochastic_iterative_sampler(
         self,
         model: Callable,
