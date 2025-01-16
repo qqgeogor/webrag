@@ -36,6 +36,7 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 from einops import rearrange
 
+
 class MaskedAutoencoderViT(nn.Module):
     def __init__(self, img_size=32, patch_size=4, in_chans=3,
                  embed_dim=192, depth=12, num_heads=3,
@@ -95,19 +96,28 @@ class MaskedAutoencoderViT(nn.Module):
             num_steps=40
         )
 
-        self.project_latent = nn.Sequential(
-            # Initial projection
-            nn.Linear(decoder_embed_dim, decoder_embed_dim * 4 * 4),
-            nn.LeakyReLU(0.2),
+        # self.project_latent = nn.Sequential(
+        #     # Initial projection
+        #     nn.Linear(decoder_embed_dim, decoder_embed_dim * 4 * 4),
+        #     nn.LeakyReLU(0.2),
             
-            # Reshape layer instead of lambda
-            Reshape((decoder_embed_dim, 4, 4)),
+        #     # Reshape layer instead of lambda
+        #     Reshape((decoder_embed_dim, 4, 4)),
             
-            # [4x4] -> [8x8]
-            nn.ConvTranspose2d(decoder_embed_dim, decoder_embed_dim, 4, 2, 1),
-            nn.BatchNorm2d(decoder_embed_dim),
-            nn.LeakyReLU(0.2),
-         )
+        #     # [4x4] -> [8x8]
+        #     nn.ConvTranspose2d(decoder_embed_dim, decoder_embed_dim, 4, 2, 1),
+        #     nn.BatchNorm2d(decoder_embed_dim),
+        #     nn.LeakyReLU(0.2),
+        #  )
+
+        self.discriminator_head = nn.Linear(embed_dim, 1)
+
+
+        # self.project_latent = nn.Linear(embed_dim, decoder_embed_dim,bias=True)
+        
+        self.project_latent = nn.Linear(embed_dim, decoder_embed_dim * (num_patches+1))
+
+
         
     def initialize_weights(self):
         # Initialize position embeddings
@@ -188,14 +198,21 @@ class MaskedAutoencoderViT(nn.Module):
         x = torch.cat((cls_tokens, x), dim=1)
 
         for blk in self.blocks:
-            if self.use_checkpoint:
+            if self.use_checkpoint and self.training:
                 x = torch.utils.checkpoint.checkpoint(blk, x)  # Enable gradient checkpointing
             else:
                 x = blk(x)
         x = self.norm(x)
         return x
 
-    def forward_encoder(self, x, mask_ratio):
+
+    def discriminate(self, x):
+        x = self.forward_feature(x)
+        x = self.discriminator_head(x)
+        return x
+
+
+    def forward_encoder(self, x, mask_ratio=0.75):
         x = self.patch_embed(x)
         x = x + self.pos_embed[:, 1:, :]
         x, mask, ids_restore = self.random_masking(x, mask_ratio)
@@ -205,7 +222,7 @@ class MaskedAutoencoderViT(nn.Module):
         x = torch.cat((cls_tokens, x), dim=1)
 
         for blk in self.blocks:
-            if self.use_checkpoint:
+            if self.use_checkpoint and self.training:
                 x = torch.utils.checkpoint.checkpoint(blk, x)  # Enable gradient checkpointing
             else:
                 x = blk(x)
@@ -215,32 +232,26 @@ class MaskedAutoencoderViT(nn.Module):
 
     def sample(self, x):
         return self.sampler.sample(x)
-
     
-    def generate(self, x,cls_tokens=None):
+    
+    def generate(self, x,contexts=None):
         
         x = self.project_latent(x)
-        b,c,h,w = x.shape
-        x = x.view(b,c,h*w).transpose(1,2)
         
-        if cls_tokens is not None:
-            cls_token = self.decoder_embed(cls_tokens)
-            
-            x = torch.cat((cls_tokens, x), dim=1)
-            x = x + self.decoder_pos_embed
-        else:
-            x = x + self.decoder_pos_embed[:,1:,:]
+        x = rearrange(x,'b (d n) -> b n d',d = self.decoder_embed_dim)
+        
+        x = x + self.decoder_pos_embed
 
 
         for blk in self.decoder_blocks:
-            if self.use_checkpoint:
+            if self.use_checkpoint and self.training:
                 x = torch.utils.checkpoint.checkpoint(blk, x)  # Enable gradient checkpointing
             else:
                 x = blk(x)
         x = self.decoder_norm(x)
         x = self.decoder_pred(x)
-        if cls_tokens is not None:
-            x = x[:, 1:, :]  # Remove CLS token
+       
+        x = x[:, 1:, :]  # Remove CLS token
 
         x = self.unpatchify(x)
 
@@ -263,7 +274,7 @@ class MaskedAutoencoderViT(nn.Module):
         x = x + self.decoder_pos_embed
 
         for blk in self.decoder_blocks:
-            if self.use_checkpoint:
+            if self.use_checkpoint and self.training:
                 x = torch.utils.checkpoint.checkpoint(blk, x)  # Enable gradient checkpointing
             else:
                 x = blk(x)
@@ -425,8 +436,10 @@ class EnergyNet(nn.Module):
             nn.LeakyReLU(0.2),
             
             # Final conv to scalar energy: [B, 512, 2, 2] -> [B, 1, 1, 1]
-            nn.Conv2d(hidden_dim * 8, 1, 2, 1, 0)
+            nn.Conv2d(hidden_dim * 8, 192, 2, 1, 0)
         )
+
+        self.head = nn.Linear(192,1)
         
         # Initialize weights properly
         self.apply(self._init_weights)
@@ -437,8 +450,18 @@ class EnergyNet(nn.Module):
             if m.bias is not None:
                 nn.init.constant_(m.bias.data, 0)
     
+    def forward_feature(self, x):
+        x = self.net(x).squeeze()
+        return x
+
+    def discriminate(self, x):
+        x = self.forward_feature(x)
+        x = self.head(x)
+        return x
+
     def forward(self, x):
-        logits = self.net(x).squeeze()
+        logits = self.forward_feature(x)
+        logits = self.head(logits)
         # print(x.shape)
         # logits = self.head(logits)
         # Add regularization term to prevent collapse
@@ -580,6 +603,9 @@ class ResNetEnergyNet(nn.Module):
             if m.bias is not None:
                 nn.init.constant_(m.bias.data, 0)
     
+    def discriminate(self, x):
+        return self.forward(x)
+
     def forward(self, x):
         x = self.initial(x)
         x = self.layer1(x)
@@ -587,8 +613,8 @@ class ResNetEnergyNet(nn.Module):
         x = self.layer3(x)
         x = self.layer4(x)
         logits = self.energy_head(x).squeeze()
-        energy = -F.logsigmoid(logits)
-        return energy
+        
+        return logits
     
 class LangevinSampler:
     def __init__(self, n_steps=60, step_size=10.0, noise_scale=0.005):
@@ -681,6 +707,22 @@ class Generator(nn.Module):
     def forward(self, z):
         return self.net(z)
 
+
+def simsiam_loss(p1, p2,scale=1e-2):
+
+    loss_tcr = -R(p1).mean()
+    loss_tcr *=scale
+
+    # Negative cosine similarity
+    loss_cos = (F.cosine_similarity(p1, p2.detach(), dim=-1).mean() + 
+             F.cosine_similarity(p2, p1.detach(), dim=-1).mean()) * 0.5
+    
+    loss_cos = 1-loss_cos
+
+    return loss_cos+loss_tcr
+
+
+
 # Modify training function
 def train_ebm_gan(args):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -697,10 +739,11 @@ def train_ebm_gan(args):
     trainset = torchvision.datasets.CIFAR10(root=args.data_path, train=True,
                                           download=True, transform=transform)
     
-    # Filter the dataset to only include class 1
-    class_1_indices = [i for i, label in enumerate(trainset.targets) if label == 1]
-    trainset.data = trainset.data[class_1_indices]
-    trainset.targets = [trainset.targets[i] for i in class_1_indices]
+    if args.cls!=-1:    
+        # Filter the dataset to only include class 1
+        class_1_indices = [i for i, label in enumerate(trainset.targets) if label == args.cls]
+        trainset.data = trainset.data[class_1_indices]
+        trainset.targets = [trainset.targets[i] for i in class_1_indices]
     
 
     trainloader = DataLoader(trainset, batch_size=args.batch_size,
@@ -716,8 +759,18 @@ def train_ebm_gan(args):
         depth=12, 
         num_heads=3
         ).to(device)
+    # 
     # discriminator = ResNetEnergyNet(img_channels=3, hidden_dim=64).to(device)
     discriminator = EnergyNet(img_channels=3, hidden_dim=64).to(device)
+    # discriminator = MaskedAutoencoderViT(
+    #     img_size=32, 
+    #     patch_size=4, 
+    #     in_chans=3, 
+    #     embed_dim=192, 
+    #     decoder_embed_dim=args.latent_dim,
+    #     depth=12, 
+    #     num_heads=3
+    #     ).to(device)
     
     # Optimizers
     g_optimizer = torch.optim.Adam(
@@ -765,22 +818,23 @@ def train_ebm_gan(args):
         discriminator.train()
         
         for i, (real_samples, _) in enumerate(tqdm(trainloader)):
-            batch_size = real_samples.size(0)
+
             real_samples = real_samples.to(device)
             
             # Train Discriminator
             for _ in range(args.n_critic):  # Train discriminator more frequently
                 d_optimizer.zero_grad()
                 
-                # cls_tokens = generator.forward_feature(real_samples)[:,0:1,:]
+                z = discriminator.forward_feature(real_samples).detach()
+                contexts = None
                 # Generate fake samples
-                z = torch.randn(batch_size,args.latent_dim, device=device)
+                # z = torch.randn(batch_size,args.latent_dim, device=device)
                 real_samples = real_samples.detach().requires_grad_(True)
-                fake_samples = generator.generate(z).detach().requires_grad_(True)
+                fake_samples = generator.generate(z,contexts).detach().requires_grad_(True)
                 
                 # Compute energies
-                real_energy = discriminator(real_samples)
-                fake_energy = discriminator(fake_samples)
+                real_energy = discriminator.discriminate(real_samples)
+                fake_energy = discriminator.discriminate(fake_samples)
                 
                 realistic_logits = real_energy - fake_energy
                 d_loss = F.softplus(-realistic_logits)
@@ -804,14 +858,24 @@ def train_ebm_gan(args):
             g_optimizer.zero_grad()
             
             # Generate new fake samples
-            z = torch.randn(batch_size,args.latent_dim, device=device)
-            fake_samples = generator.generate(z)
-            fake_energy = discriminator(fake_samples)
-            real_energy = discriminator(real_samples)
+            z = discriminator.forward_feature(real_samples).detach()
+            contexts = None
+            # contexts = None
+            fake_samples = generator.generate(z,contexts)
+
+            # p2 = generator.forward_encoder(fake_samples)
+
+            # loss_contrastive = simsiam_loss(p1.squeeze(1),p2.squeeze(1),scale=1e-2).mean()
+
+
+            fake_energy = discriminator.discriminate(fake_samples)
+            real_energy = discriminator.discriminate(real_samples)
 
             realistic_logits = fake_energy - real_energy
             g_loss = F.softplus(-realistic_logits)
             g_loss = g_loss.mean()
+
+            g_loss = g_loss #+ loss_contrastive
             
             # Improved generator loss
             # g_loss = (fake_energy).mean()
@@ -836,7 +900,8 @@ def train_ebm_gan(args):
         
         # Save samples and model checkpoints
         if epoch % args.save_freq == 0:
-            save_gan_samples(generator, discriminator, epoch, args.output_dir, device)
+            real_samples = next(iter(trainloader))[0].to(device)
+            save_gan_samples(generator, discriminator, epoch, args.output_dir, device,real_samples=real_samples)
             torch.save({
                 'epoch': epoch,
                 'generator_state_dict': generator.state_dict(),
@@ -847,19 +912,31 @@ def train_ebm_gan(args):
                 'd_scheduler_state_dict': d_scheduler.state_dict(),
             }, os.path.join(args.output_dir, f'ebm_gan_checkpoint_{epoch}.pth'))
 
-def save_gan_samples(generator, discriminator, epoch, output_dir, device, batch_size=36):
+def save_gan_samples(generator, discriminator, epoch, output_dir, device, batch_size=36,real_samples=None):
     generator.eval()
     discriminator.eval()
+    
+
     with torch.no_grad():
-        z = torch.randn(batch_size,args.latent_dim, device=device)
-        fake_samples = generator.generate(z)
+        z = discriminator.forward_feature(real_samples).detach()
+        contexts = None
+        # contexts = None
+        fake_samples = generator.generate(z,contexts)
         
         # Changed 'range' to 'value_range'
-        grid = make_grid(fake_samples, nrow=6, normalize=True, value_range=(-1, 1))
+        grid = make_grid(fake_samples[:batch_size], nrow=6, normalize=True, value_range=(-1, 1))
         plt.figure(figsize=(10, 10))
         plt.imshow(grid.cpu().permute(1, 2, 0))
         plt.axis('off')
         plt.savefig(os.path.join(output_dir, f'gan_samples_epoch_{epoch}.png'))
+
+        # Changed 'range' to 'value_range'
+        grid = make_grid(real_samples[:batch_size], nrow=6, normalize=True, value_range=(-1, 1))
+        plt.figure(figsize=(10, 10))
+        plt.imshow(grid.cpu().permute(1, 2, 0))
+        plt.axis('off')
+        plt.savefig(os.path.join(output_dir, f'gan_samples_epoch_{epoch}_real.png'))
+
         plt.close()
 
 def compute_gradient_penalty(discriminator, real_samples, fake_samples, device):
@@ -867,7 +944,7 @@ def compute_gradient_penalty(discriminator, real_samples, fake_samples, device):
     alpha = torch.rand((real_samples.size(0), 1, 1, 1), device=device)
     interpolates = (alpha * real_samples + (1 - alpha) * fake_samples).requires_grad_(True)
     
-    d_interpolates = discriminator(interpolates)
+    d_interpolates = discriminator.discriminate(interpolates)
     gradients = torch.autograd.grad(
         outputs=d_interpolates,
         inputs=interpolates,
@@ -910,7 +987,8 @@ def get_args_parser():
     parser.add_argument('--use_amp', action='store_true')
     parser.add_argument('--log_freq', default=100, type=int)
     parser.add_argument('--save_freq', default=1, type=int)
-    
+    parser.add_argument('--cls', default=-1, type=int)
+
     # Add learning rate scheduling parameters
     parser.add_argument('--min_lr', default=1e-6, type=float,
                         help='Minimum learning rate for cosine annealing')
