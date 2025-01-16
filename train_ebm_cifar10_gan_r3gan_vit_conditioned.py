@@ -115,7 +115,7 @@ class MaskedAutoencoderViT(nn.Module):
 
         # self.project_latent = nn.Linear(embed_dim, decoder_embed_dim,bias=True)
         
-        self.project_latent = nn.Linear(embed_dim, decoder_embed_dim * (num_patches+1))
+        self.project_latent = nn.Linear(embed_dim*2, decoder_embed_dim * (num_patches+1))
 
 
         
@@ -235,6 +235,8 @@ class MaskedAutoencoderViT(nn.Module):
     
     
     def generate(self, x,contexts=None):
+        contexts = F.normalize(contexts,p=2,dim=-1)
+        x = torch.cat([x,contexts],dim=-1)
         
         x = self.project_latent(x)
         
@@ -820,15 +822,14 @@ def train_ebm_gan(args):
         for i, (real_samples, _) in enumerate(tqdm(trainloader)):
 
             real_samples = real_samples.to(device)
-            
+            batch_size = real_samples.size(0)
             # Train Discriminator
             for _ in range(args.n_critic):  # Train discriminator more frequently
                 d_optimizer.zero_grad()
                 
-                z = discriminator.forward_feature(real_samples).detach()
-                contexts = None
-                # Generate fake samples
+                contexts = discriminator.forward_feature(real_samples).detach()
                 # z = torch.randn(batch_size,args.latent_dim, device=device)
+                z = torch.rand_like(contexts)
                 real_samples = real_samples.detach().requires_grad_(True)
                 fake_samples = generator.generate(z,contexts).detach().requires_grad_(True)
                 
@@ -858,8 +859,9 @@ def train_ebm_gan(args):
             g_optimizer.zero_grad()
             
             # Generate new fake samples
-            z = discriminator.forward_feature(real_samples).detach()
-            contexts = None
+            contexts = discriminator.forward_feature(real_samples).detach()
+            # z = torch.randn(batch_size,args.latent_dim, device=device)
+            z = torch.rand_like(contexts)
             # contexts = None
             fake_samples = generator.generate(z,contexts)
 
@@ -918,8 +920,10 @@ def save_gan_samples(generator, discriminator, epoch, output_dir, device, batch_
     
 
     with torch.no_grad():
-        z = discriminator.forward_feature(real_samples).detach()
-        contexts = None
+        contexts = discriminator.forward_feature(real_samples).detach()
+        # contexts = None
+        # z = torch.randn(batch_size,args.latent_dim, device=device)
+        z = torch.rand_like(contexts)
         # contexts = None
         fake_samples = generator.generate(z,contexts)
         
@@ -986,7 +990,7 @@ def get_args_parser():
     parser.add_argument('--num_workers', default=4, type=int)
     parser.add_argument('--use_amp', action='store_true')
     parser.add_argument('--log_freq', default=100, type=int)
-    parser.add_argument('--save_freq', default=1, type=int)
+    parser.add_argument('--save_freq', default=20, type=int)
     parser.add_argument('--cls', default=-1, type=int)
 
     # Add learning rate scheduling parameters
