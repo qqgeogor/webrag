@@ -223,28 +223,7 @@ class LangevinSampler:
         return (x.detach(), trajectory) if return_trajectory else x.detach()
     
 
-# def add_noise(img,sigma_min=0.01,sigma_max=0.75,noise_type='log'):
-#     """Add DDPM-style noise to images"""
-#     # u = torch.rand(img.shape[0]).to(img.device)
-#     u = torch.empty(img.shape[0], device=img.device).uniform_(0, 1)
-#     if noise_type == 'log':
-#         log_sigma_min = math.log(sigma_min)
-#         log_sigma_max = math.log(sigma_max)
-        
-#         log_sigma = log_sigma_min + u * (log_sigma_max - log_sigma_min)
-#         sigma = torch.exp(log_sigma).view(-1, 1, 1, 1)
-#     elif noise_type == 'linear':
-#         sigma = sigma_min + u * (sigma_max - sigma_min)
-#         sigma = sigma.view(-1, 1, 1, 1)
-#     else:
-#         raise ValueError(f"Invalid noise type: {noise_type}")
-
-#     noise = torch.randn_like(img)
-#     img = img * (1 - sigma) + noise * sigma
-#     return img, sigma
-
-
-def add_noise(img,sigma_min=0.002,sigma_max=80,noise_type='log'):
+def add_noise(img,sigma_min=0.01,sigma_max=0.3,noise_type='log'):
     """Add DDPM-style noise to images"""
     # u = torch.rand(img.shape[0]).to(img.device)
     u = torch.empty(img.shape[0], device=img.device).uniform_(0, 1)
@@ -261,7 +240,9 @@ def add_noise(img,sigma_min=0.002,sigma_max=80,noise_type='log'):
         raise ValueError(f"Invalid noise type: {noise_type}")
 
     noise = torch.randn_like(img)
-    return img+noise*sigma, sigma
+    img = img * (1 - sigma) + noise * sigma
+    return img, sigma
+
 
 
 
@@ -499,8 +480,8 @@ def simsiam_loss(p1, p2, h1, h2):
     p1 = F.normalize(p1, p=2, dim=-1)
     p2 = F.normalize(p2, p=2, dim=-1)
     loss_tcr = -R_nonorm(p1).mean()
-    loss_tcr *=1e-1
-    
+    loss_tcr *=1e-2
+
     # Negative cosine similarity
     loss_cos =  F.cosine_similarity(h1, p2, dim=-1).mean()
     
@@ -647,7 +628,6 @@ def train_ebm(args):
             
             
             # Forward pass
-            # args.use_amp = True
             args.use_amp = False
 
             with autocast(enabled=args.use_amp):
@@ -715,7 +695,7 @@ def get_args_parser():
     
     # Training parameters
     parser.add_argument('--epochs', default=200, type=int)
-    parser.add_argument('--batch_size', default=256, type=int)
+    parser.add_argument('--batch_size', default=128, type=int)
     parser.add_argument('--lr', default=1e-4, type=float)
     parser.add_argument('--min_lr', default=1e-5, type=float)
     parser.add_argument('--warmup_epochs', default=5, type=int)
@@ -730,7 +710,7 @@ def get_args_parser():
     
     # System parameters
     parser.add_argument('--data_path', default='c:/dataset', type=str)
-    parser.add_argument('--output_dir', default='F:/output/cifar10-ebm-cl-r-ema-cm-edm')
+    parser.add_argument('--output_dir', default='F:/output/cifar10-ebm-cl-r-ema-cm')
     parser.add_argument('--num_workers', default=4, type=int)
     parser.add_argument('--use_amp', action='store_true')
     parser.add_argument('--log_freq', default=100, type=int)

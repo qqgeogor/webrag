@@ -86,12 +86,13 @@ def finetune(args):
 
     # Load pretrained SimSiam model
     backbone = SimSiamModel(img_channels=3, hidden_dim=64).to(device)
-    checkpoint = torch.load(args.pretrained_path)
-    if args.encoder_type == 'student':
-        backbone.load_state_dict(checkpoint['model_state_dict'],strict=False)
-    else:
-        backbone.load_state_dict(checkpoint['teacher_model_state_dict'],strict=False)
-    
+    if args.pretrained_path:    
+        checkpoint = torch.load(args.pretrained_path)
+        if args.encoder_type == 'student':
+            backbone.load_state_dict(checkpoint['model_state_dict'],strict=False)
+        else:
+            backbone.load_state_dict(checkpoint['teacher_model_state_dict'],strict=False)
+        
     # Create classifier
     model = CifarClassifier(backbone,freeze_backbone=args.freeze_backbone).to(device)
     criterion = nn.CrossEntropyLoss()
@@ -156,8 +157,8 @@ def get_args_parser():
     
     # Training parameters
     parser.add_argument('--epochs', default=100, type=int)
-    parser.add_argument('--batch_size', default=256, type=int)
-    parser.add_argument('--lr', default=1e-3, type=float)
+    parser.add_argument('--batch_size', default=128, type=int)
+    parser.add_argument('--lr', default=1e-4, type=float)
     parser.add_argument('--encoder_type', default='student', type=str)
     parser.add_argument('--freeze_backbone', action='store_true',default=False,
                        help='Freeze backbone during training')
