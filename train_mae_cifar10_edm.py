@@ -159,7 +159,7 @@ class MaskedAutoencoderViT(nn.Module):
         x = torch.cat((cls_tokens, x), dim=1)
 
         for blk in self.blocks:
-            if self.use_checkpoint:
+            if self.use_checkpoint and self.training:
                 x = torch.utils.checkpoint.checkpoint(blk, x)  # Enable gradient checkpointing
             else:
                 x = blk(x)
@@ -174,9 +174,9 @@ class MaskedAutoencoderViT(nn.Module):
         cls_token = self.cls_token + self.pos_embed[:, :1, :]
         cls_tokens = cls_token.expand(x.shape[0], -1, -1)
         x = torch.cat((cls_tokens, x), dim=1)
-
+        
         for blk in self.blocks:
-            if self.use_checkpoint:
+            if self.use_checkpoint and self.training:
                 x = torch.utils.checkpoint.checkpoint(blk, x)  # Enable gradient checkpointing
             else:
                 x = blk(x)
@@ -386,17 +386,15 @@ def visualize_reconstruction(model, images, mask_ratio=0.75, save_path='reconstr
     model.eval()
     with torch.no_grad():
         # Get reconstruction and mask
-        
-        sigmas = get_sigmas_karras(1, model.sampler.sigma_min, model.sampler.sigma_max, rho=model.sampler.rho, device="cpu")
 
         latent,mask,ids_restore = model.forward_encoder(images,mask_ratio)
         noised_x = torch.randn_like(images)*model.sampler.sigma_max
         pred1 = model.denoise(noised_x,latent,mask,ids_restore)
-
+        
         pred1 = (1-mask.unsqueeze(-1)) * model.patchify(images) + mask.unsqueeze(-1) * model.patchify(pred1)
         pred1 = model.unpatchify(pred1)
         
-
+        
         sigmas = get_sigmas_karras(40, model.sampler.sigma_min, model.sampler.sigma_max, rho=model.sampler.rho, device="cpu")
         pred2,mask = model.sampler.stochastic_iterative_sampler(model,images,sigmas=sigmas,mask_ratio=mask_ratio)
         

@@ -164,7 +164,7 @@ def get_args_parser():
     # System parameters
     parser.add_argument('--data_path', default='c:/dataset', type=str)
     parser.add_argument('--output_dir', default='F:/output/cifar10-classifier')
-    parser.add_argument('--pretrained_path', default='F:/output/cifar10-ebm-tcr/simsiam_checkpoint_30.pth', 
+    parser.add_argument('--pretrained_path', default='', 
                        type=str, help='Path to pretrained SimSiam model')
     parser.add_argument('--num_workers', default=4, type=int)
     parser.add_argument('--log_freq', default=100, type=int)

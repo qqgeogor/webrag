@@ -40,6 +40,13 @@ class EnergyNet(nn.Module):
             # Final conv to scalar energy: [B, 512, 2, 2] -> [B, 128, 1, 1]
             nn.Conv2d(hidden_dim * 8, 128, 2, 1, 0)
         )
+        self.apply(self._init_weights)
+
+    def _init_weights(self, m):
+        if isinstance(m, nn.Conv2d):
+            nn.init.orthogonal_(m.weight.data)
+            if m.bias is not None:
+                nn.init.constant_(m.bias.data, 0)   
     
     def forward(self, x):
         Z = self.net(x).squeeze()
@@ -93,6 +100,19 @@ def mcr(Z1,Z2):
 
 def dino_loss(Z1,Z2,scale_Z1=1e-2):
     return -R(Z1).mean()*scale_Z1 + (1 - F.cosine_similarity(Z1,Z2,dim=-1)).mean()
+
+def inv_dino_loss(Z1,Z2,scale_Z1=1e-2):
+    return -R(Z1).mean()*scale_Z1 + (F.cosine_similarity(Z1,Z2,dim=-1).abs()).mean()
+
+
+
+
+def mmcr_loss(Z1,Z2,scale_Z1=1e-2):
+    return -R(Z1).mean()*scale_Z1 + (1 - F.cosine_similarity(Z1,Z2,dim=-1)).mean()
+
+def inv_dino_loss(Z1,Z2,scale_Z1=1e-2):
+    return -R(Z1).mean()*scale_Z1 + (F.cosine_similarity(Z1,Z2,dim=-1).abs()).mean()
+
 
 
 def tcr_loss(Z1,Z2):
@@ -289,12 +309,20 @@ def train_ebm_gan(args):
         transforms.ToTensor(),
         transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
     ])
-
-    accumulation_steps = 5 
+ 
     
     # Load CIFAR-10
     trainset = torchvision.datasets.CIFAR10(root=args.data_path, train=True,
                                           download=True, transform=transform)
+    
+
+    if args.cls != -1:
+        # Filter the dataset to only include class 1
+        class_1_indices = [i for i, label in enumerate(trainset.targets) if label == args.cls]
+        trainset.data = trainset.data[class_1_indices]
+        trainset.targets = [trainset.targets[i] for i in class_1_indices]
+    
+
     trainloader = DataLoader(trainset, batch_size=args.batch_size,
                            shuffle=True, num_workers=args.num_workers)
 
@@ -307,8 +335,9 @@ def train_ebm_gan(args):
     g_optimizer = torch.optim.Adam(
         generator.parameters(), 
         lr=args.g_lr, 
-        betas=(args.g_beta1, args.g_beta2)
+        betas=(0.5, 0.999)
     )
+
     d_optimizer = torch.optim.Adam(
         discriminator.parameters(), 
         lr=args.d_lr, 
@@ -326,15 +355,14 @@ def train_ebm_gan(args):
         T_max=args.epochs,
         eta_min=args.min_lr
     )
-        
+    
 
     g_tcr_schedule = utils.cosine_scheduler(
         0.2,
-        0,
+        0.15,
         args.epochs, len(trainloader),
     )
 
-    accumulation_steps = 5
     # Add checkpoint loading logic
     if args.resume:
         checkpoint_path = args.resume
@@ -394,13 +422,14 @@ def train_ebm_gan(args):
                 accumulated_real_energy_d.append(real_energy)
                 accumulated_fake_energy_d.append(fake_energy)
                 
-                if len(accumulated_real_energy_d) == 5:
+                if len(accumulated_real_energy_d) == args.accumulation_steps:
                     # Concatenate accumulated energies
                     real_energy_cat = torch.cat(accumulated_real_energy_d, dim=0)
                     fake_energy_cat = torch.cat(accumulated_fake_energy_d, dim=0)
                     
                     # Compute MCR loss on accumulated energies
-                    d_loss = -mcr(real_energy_cat, fake_energy_cat)
+                    # d_loss = -mcr(real_energy_cat, fake_energy_cat)
+                    d_loss = inv_dino_loss(real_energy_cat,fake_energy_cat,scale_Z1=1e-2)
                     
                     # Backward and optimize
                     d_loss.backward()
@@ -441,13 +470,15 @@ def train_ebm_gan(args):
             accumulated_real_energy_g.append(real_energy)
             accumulated_fake_energy_g.append(fake_energy)
 
-            if len(accumulated_real_energy_g) == accumulation_steps:
+            if len(accumulated_real_energy_g) == args.accumulation_steps:
                 # Concatenate accumulated energies
                 real_energy_cat = torch.cat(accumulated_real_energy_g, dim=0)
                 fake_energy_cat = torch.cat(accumulated_fake_energy_g, dim=0)
                 
-                g_loss = mcr(real_energy_cat,fake_energy_cat)
-                g_loss += -R(fake_energy_cat)*g_tcr_scale
+                # g_loss = mcr(real_energy_cat,fake_energy_cat)
+                # g_loss += -R(fake_energy_cat)*g_tcr_scale
+                
+                g_loss = dino_loss(real_energy_cat,fake_energy_cat,scale_Z1=1e-2)
                 
                 # Backward and optimize
                 g_loss.backward()
@@ -484,10 +515,10 @@ def train_ebm_gan(args):
         # Step the schedulers at the end of each epoch
         g_scheduler.step()
         d_scheduler.step()
-        
+        real_samples = next(iter(trainloader))[0].to(device)
         # Save samples and model checkpoints
         if epoch % args.save_freq == 0:
-            save_gan_samples(real_samples,generator, discriminator, epoch, args.output_dir, device)
+            save_gan_samples(generator, discriminator, epoch, args.output_dir, device, n_samples=36,real_samples=real_samples)
             torch.save({
                 'epoch': epoch,
                 'generator_state_dict': generator.state_dict(),
@@ -498,30 +529,28 @@ def train_ebm_gan(args):
                 'd_scheduler_state_dict': d_scheduler.state_dict(),
             }, os.path.join(args.output_dir, f'ebm_gan_checkpoint_{epoch}.pth'))
 
-def save_gan_samples(real_samples,generator, discriminator, epoch, output_dir, device, n_samples=36):
+def save_gan_samples(generator, discriminator, epoch, output_dir, device, n_samples=36,real_samples=None):
     generator.eval()
     discriminator.eval()
     
     with torch.no_grad():
         # z = torch.randn(n_samples, args.latent_dim, device=device)
-        real_samples = real_samples[:n_samples]
-        z = discriminator(real_samples)
+        
+        z = discriminator.net(real_samples[:n_samples]).squeeze()
         fake_samples = generator(z)
         
-        # Save generated samples
-        grid = make_grid(real_samples, nrow=6, normalize=True, range=(-1, 1))
-        plt.figure(figsize=(10, 10))
-        plt.imshow(grid.cpu().permute(1, 2, 0))
-        plt.axis('off')
-        plt.savefig(os.path.join(output_dir, f'real_samples_epoch_{epoch}.png'))
-        plt.close()
-
-        # Save generated samples
-        grid = make_grid(fake_samples, nrow=6, normalize=True, range=(-1, 1))
+        # Changed 'range' to 'value_range'
+        grid = make_grid(fake_samples, nrow=6, normalize=True, value_range=(-1, 1))
         plt.figure(figsize=(10, 10))
         plt.imshow(grid.cpu().permute(1, 2, 0))
         plt.axis('off')
         plt.savefig(os.path.join(output_dir, f'gan_samples_epoch_{epoch}.png'))
+
+        grid = make_grid(real_samples[:n_samples], nrow=6, normalize=True, value_range=(-1, 1))
+        plt.figure(figsize=(10, 10))
+        plt.imshow(grid.cpu().permute(1, 2, 0))
+        plt.axis('off')
+        plt.savefig(os.path.join(output_dir, f'gan_samples_epoch_{epoch}_real.png'))
         plt.close()
 
 def compute_gradient_penalty(discriminator, real_samples, fake_samples, device):
@@ -550,20 +579,20 @@ def get_args_parser():
     parser.add_argument('--latent_dim', default=128, type=int)
     parser.add_argument('--g_lr', default=1e-4, type=float)
     parser.add_argument('--d_lr', default=1e-4, type=float)
-    parser.add_argument('--n_critic', default=1, type=int,
+    parser.add_argument('--n_critic', default=2, type=int,
                         help='Number of discriminator updates per generator update')
     parser.add_argument('--gp_weight', default=10.0, type=float,
                         help='Weight of gradient penalty')
     
     # Modify learning rates
-    parser.add_argument('--g_beta1', default=0.0, type=float,
+    parser.add_argument('--g_beta1', default=0.5, type=float,
                         help='Beta1 for generator optimizer')
     parser.add_argument('--g_beta2', default=0.9, type=float,
                         help='Beta2 for generator optimizer')
     
     # Existing parameters
     parser.add_argument('--epochs', default=1200, type=int)
-    parser.add_argument('--batch_size', default=128, type=int)
+    parser.add_argument('--batch_size', default=256, type=int)
     parser.add_argument('--lr', default=1e-4, type=float)
     parser.add_argument('--data_path', default='c:/dataset', type=str)
     parser.add_argument('--output_dir', default='F:/output/cifar10-ebm-gan-mcr-ctrl')
@@ -571,6 +600,8 @@ def get_args_parser():
     parser.add_argument('--use_amp', action='store_true')
     parser.add_argument('--log_freq', default=100, type=int)
     parser.add_argument('--save_freq', default=1, type=int)
+    parser.add_argument('--cls', default=-1, type=int)
+    parser.add_argument('--accumulation_steps', default=1, type=int)
     
     # Add learning rate scheduling parameters
     parser.add_argument('--min_lr', default=1e-6, type=float,
@@ -581,6 +612,100 @@ def get_args_parser():
                         help='Path to checkpoint to resume training from')
     
     return parser
+
+class LayerNorm(nn.Module):
+    def __init__(self, normalized_shape, eps=1e-6):
+        super().__init__()
+        self.weight = nn.Parameter(torch.ones(normalized_shape))
+        self.bias = nn.Parameter(torch.zeros(normalized_shape))
+        self.eps = eps
+        self.normalized_shape = (normalized_shape, )
+    
+    def forward(self, x):
+        u = x.mean(1, keepdim=True)
+        s = (x - u).pow(2).mean(1, keepdim=True)
+        x = (x - u) / torch.sqrt(s + self.eps)
+        return self.weight[:, None, None] * x + self.bias[:, None, None]
+
+class ConvNeXtBlock(nn.Module):
+    def __init__(self, dim, drop_path=0.):
+        super().__init__()
+        self.dwconv = nn.Conv2d(dim, dim, kernel_size=7, padding=3, groups=dim) # depth-wise conv
+        self.norm = LayerNorm(dim)
+        self.pwconv1 = nn.Conv2d(dim, 4 * dim, kernel_size=1)
+        self.act = nn.GELU()
+        self.pwconv2 = nn.Conv2d(4 * dim, dim, kernel_size=1)
+        self.drop_path = DropPath(drop_path) if drop_path > 0. else nn.Identity()
+
+    def forward(self, x):
+        input = x
+        x = self.dwconv(x)
+        x = self.norm(x)
+        x = self.pwconv1(x)
+        x = self.act(x)
+        x = self.pwconv2(x)
+        x = input + self.drop_path(x)
+        return x
+
+class ConvNeXtEnergyNet(nn.Module):
+    def __init__(self, img_channels=3, hidden_dim=96):
+        super().__init__()
+        
+        # Stem stage: patchify using conv
+        self.stem = nn.Sequential(
+            nn.Conv2d(img_channels, hidden_dim, kernel_size=4, stride=4),
+            LayerNorm(hidden_dim)
+        )
+        
+        # Stage 1
+        self.stage1 = nn.Sequential(
+            ConvNeXtBlock(hidden_dim),
+            ConvNeXtBlock(hidden_dim),
+            nn.Conv2d(hidden_dim, hidden_dim * 2, kernel_size=2, stride=2),
+            LayerNorm(hidden_dim * 2)
+        )
+        
+        # Stage 2
+        self.stage2 = nn.Sequential(
+            ConvNeXtBlock(hidden_dim * 2),
+            ConvNeXtBlock(hidden_dim * 2),
+            nn.Conv2d(hidden_dim * 2, hidden_dim * 4, kernel_size=2, stride=2),
+            LayerNorm(hidden_dim * 4)
+        )
+        
+        # Final stage
+        self.stage3 = nn.Sequential(
+            ConvNeXtBlock(hidden_dim * 4),
+            ConvNeXtBlock(hidden_dim * 4),
+            nn.AdaptiveAvgPool2d(1),
+            nn.Conv2d(hidden_dim * 4, 128, kernel_size=1)
+        )
+        
+        # Optional: add a head for energy output
+        self.head = nn.Linear(128, 1)
+        
+        # Initialize weights
+        self.apply(self._init_weights)
+    
+    def _init_weights(self, m):
+        if isinstance(m, (nn.Conv2d, nn.Linear)):
+            nn.init.trunc_normal_(m.weight, std=.02)
+            if m.bias is not None:
+                nn.init.constant_(m.bias, 0)
+        elif isinstance(m, LayerNorm):
+            nn.init.constant_(m.bias, 0)
+            nn.init.constant_(m.weight, 1.0)
+    
+    def forward(self, x):
+        x = self.stem(x)
+        x = self.stage1(x)
+        x = self.stage2(x)
+        x = self.stage3(x)
+        x = x.squeeze()
+        
+        # Optional: use head for energy output
+        # x = self.head(x)
+        return x
 
 if __name__ == '__main__':
     args = get_args_parser().parse_args()

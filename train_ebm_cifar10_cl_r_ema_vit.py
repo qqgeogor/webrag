@@ -11,7 +11,7 @@ from torchvision.utils import make_grid
 from train_mae_cifar10_edm import MaskedAutoencoderViT
 import numpy as np
 from tqdm import tqdm
-
+import random
 import torch.nn.functional as F
 import copy
 
@@ -384,7 +384,6 @@ class SimSiamModel(nn.Module):
             num_heads=3,
             mlp_ratio=4,
             use_checkpoint=True,
-
         )
         
         # Projector network
@@ -398,15 +397,25 @@ class SimSiamModel(nn.Module):
             nn.Linear(proj_dim, proj_dim),
             nn.BatchNorm1d(proj_dim)
         )
-        
+    
+    def random_mask_ratio(self,noise_type='log',sigma_min=0.02,sigma_max=0.75):
+        if noise_type == 'log':
+            log_sigma_min = math.log(sigma_min)
+            log_sigma_max = math.log(sigma_max)
+            u = np.random.uniform(0,1)
+            log_sigma = log_sigma_min + u * (log_sigma_max - log_sigma_min)
+            return math.exp(log_sigma)
     
     def forward(self, x1, x2):
         # Get representations
         # z1 = self.encoder(x1).squeeze()
         # z2 = self.encoder(x2).squeeze()
 
-        z1,_,_ = self.encoder.forward_encoder(x1,mask_ratio=0.75)
-        z2,_,_ = self.encoder.forward_encoder(x2,mask_ratio=0.75)
+        mask_ratio1 = self.random_mask_ratio()
+        mask_ratio2 = self.random_mask_ratio()
+        
+        z1,_,_ = self.encoder.forward_encoder(x1,mask_ratio=mask_ratio1)
+        z2,_,_ = self.encoder.forward_encoder(x2,mask_ratio=mask_ratio2)
         z1 = z1[:,0]
         z2 = z2[:,0]
         
@@ -561,6 +570,7 @@ def train_ebm(args):
     # Initialize model
     model = SimSiamModel(img_channels=3, hidden_dim=64).to(device)
     teacher_model = SimSiamModel(img_channels=3, hidden_dim=64).to(device)
+    teacher_model.eval()
 
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
     
@@ -600,6 +610,9 @@ def train_ebm(args):
         
         for i, (images, _) in enumerate(tqdm(trainloader)):
             it = len(trainloader) * epoch + i  # global training iteration
+            current_lr = lr_schedule[it]
+            optimizer.param_groups[0]['lr'] = current_lr
+            # optimizer.param_groups[0]['weight_decay'] = wd_schedule[it]
 
             img1, img2 = images[0].to(device), images[1].to(device)  # Unpack the two views
             images = img1
@@ -663,6 +676,7 @@ def train_ebm(args):
             if i % args.log_freq == 0:
                 visualize_augmentations(model,img1,img2,images,args.output_dir,epoch)
                 print(f'Epoch [{epoch}/{args.epochs}], Step [{i}/{len(trainloader)}], '
+                      f'current_lr: {current_lr:.4f}, '
                       f'Loss: {loss.item():.4f}, Loss_cos: {loss_cos.item():.4f}, Loss_tcr: {loss_tcr.item():.4f}')
 
         # Add visualization of augmentations periodically
@@ -708,7 +722,7 @@ def get_args_parser():
     
     # System parameters
     parser.add_argument('--data_path', default='c:/dataset', type=str)
-    parser.add_argument('--output_dir', default='F:/output/cifar10-ebm-cl-r-ema')
+    parser.add_argument('--output_dir', default='F:/output/cifar10-ebm-cl-r-ema-vit')
     parser.add_argument('--num_workers', default=4, type=int)
     parser.add_argument('--use_amp', action='store_true')
     parser.add_argument('--log_freq', default=100, type=int)

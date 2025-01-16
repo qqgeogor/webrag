@@ -12,6 +12,7 @@ import numpy as np
 from tqdm import tqdm
 import argparse
 import torch.nn.functional as F
+from ibot_ctrl import utils_ibot as utils
 
 
 
@@ -314,12 +315,12 @@ def train_ebm_gan(args):
     discriminator = EnergyNet(img_channels=3, hidden_dim=64).to(device)
     
     # Optimizers
-    g_optimizer = torch.optim.Adam(
+    g_optimizer = torch.optim.AdamW(
         generator.parameters(), 
         lr=args.g_lr, 
-        betas=(args.g_beta1, args.g_beta2)
+        betas=(0.5, 0.999)
     )
-    d_optimizer = torch.optim.Adam(
+    d_optimizer = torch.optim.AdamW(
         discriminator.parameters(), 
         lr=args.d_lr, 
         betas=(0.5, 0.999)
@@ -352,8 +353,12 @@ def train_ebm_gan(args):
             start_epoch = checkpoint['epoch'] + 1
             print(f"Resuming from epoch {start_epoch}")
     
+    # Initialize AMP scaler
+    g_scaler = GradScaler()
+    d_scaler = GradScaler()
+
     # Training loop
-    for epoch in range(start_epoch,args.epochs):
+    for epoch in range(start_epoch, args.epochs):
         generator.train()
         discriminator.train()
         
@@ -362,55 +367,46 @@ def train_ebm_gan(args):
             real_samples = real_samples.to(device)
             
             # Train Discriminator
-            for _ in range(args.n_critic):  # Train discriminator more frequently
+            for _ in range(args.n_critic):
                 d_optimizer.zero_grad()
                 
-                # Generate fake samples
                 z = torch.randn(batch_size, args.latent_dim, device=device)
-
+                
                 real_samples = real_samples.detach().requires_grad_(True)
-                fake_samples = generator(z).detach().requires_grad_(True)
-                
-                # Compute energies
-                real_energy = discriminator(real_samples)
-                fake_energy = discriminator(fake_samples)
-                
-                r1 = zero_centered_gradient_penalty(real_samples, real_energy).mean()
-                r2 = zero_centered_gradient_penalty(fake_samples, fake_energy).mean()
-                d_loss = -mcr(real_energy,fake_energy) + args.gp_weight/2 * (r1 + r2)
-                # Improved EBM-GAN discriminator loss
-                # d_loss = ((real_energy) + (-fake_energy)).mean()
-                
-                # d_loss = -mcr(real_energy,fake_energy)
-                
-                # # Add gradient penalty
-                # gp = compute_gradient_penalty(discriminator, real_samples, fake_samples, device)
-                # d_loss = d_loss + args.gp_weight * gp
-                
-                d_loss.backward()
-                d_optimizer.step()
+                # Generate fake samples with autocast
+                with autocast():
+                    fake_samples = generator(z).detach().requires_grad_(True)
+                    
+                    # Compute energies
+                    real_energy = discriminator(real_samples)
+                    fake_energy = discriminator(fake_samples)
+                    
+                    r1 = zero_centered_gradient_penalty(real_samples, real_energy).mean()
+                    r2 = zero_centered_gradient_penalty(fake_samples, fake_energy).mean()
+                    d_loss = -mcr(real_energy, fake_energy) + args.gp_weight/2 * (r1 + r2)
+
+                # Scale and backward
+                d_scaler.scale(d_loss).backward()
+                d_scaler.step(d_optimizer)
+                d_scaler.update()
             
             # Train Generator
             g_optimizer.zero_grad()
             
-            # Generate new fake samples
             z = torch.randn(batch_size, args.latent_dim, device=device)
-            fake_samples = generator(z)
             
-            
-            real_energy = discriminator(real_samples)
-            fake_energy = discriminator(fake_samples)
-            
-            
-            # Improved generator loss
-            # g_loss = (fake_energy).mean()
-            g_loss = mcr(real_energy,fake_energy)
-            # g_loss += -R(real_energy)*0.2
-            # g_loss += (R(fake_energy)-R(real_energy)).abs().mean()*0.2
-            
-            g_loss.backward()
-            g_optimizer.step()
-            
+            # Use autocast for generator forward pass
+            with autocast():
+                fake_samples = generator(z)
+                real_energy = discriminator(real_samples)
+                fake_energy = discriminator(fake_samples)
+                g_loss = mcr(real_energy, fake_energy)
+
+            # Scale and backward
+            g_scaler.scale(g_loss).backward()
+            g_scaler.step(g_optimizer)
+            g_scaler.update()
+
             if i % args.log_freq == 0:
                 current_g_lr = g_optimizer.param_groups[0]['lr']
                 current_d_lr = d_optimizer.param_groups[0]['lr']
@@ -503,7 +499,7 @@ def get_args_parser():
     parser.add_argument('--num_workers', default=4, type=int)
     parser.add_argument('--use_amp', action='store_true')
     parser.add_argument('--log_freq', default=100, type=int)
-    parser.add_argument('--save_freq', default=10, type=int)
+    parser.add_argument('--save_freq', default=5, type=int)
     
     # Add learning rate scheduling parameters
     parser.add_argument('--min_lr', default=1e-6, type=float,

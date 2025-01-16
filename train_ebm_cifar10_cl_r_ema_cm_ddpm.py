@@ -223,9 +223,10 @@ class LangevinSampler:
         return (x.detach(), trajectory) if return_trajectory else x.detach()
     
 
-def add_noise(img,sigma_min=0.01,sigma_max=0.3,noise_type='log'):
+def add_noise(img,sigma_min=0.01,sigma_max=0.75,noise_type='log'):
     """Add DDPM-style noise to images"""
-    u = torch.rand(img.shape[0]).to(img.device)
+    # u = torch.rand(img.shape[0]).to(img.device)
+    u = torch.empty(img.shape[0], device=img.device).uniform_(0, 1)
     if noise_type == 'log':
         log_sigma_min = math.log(sigma_min)
         log_sigma_max = math.log(sigma_max)
@@ -241,6 +242,27 @@ def add_noise(img,sigma_min=0.01,sigma_max=0.3,noise_type='log'):
     noise = torch.randn_like(img)
     img = img * (1 - sigma) + noise * sigma
     return img, sigma
+
+
+# def add_noise(img,sigma_min=0.002,sigma_max=80,noise_type='linear'):
+#     """Add DDPM-style noise to images"""
+#     # u = torch.rand(img.shape[0]).to(img.device)
+#     u = torch.empty(img.shape[0], device=img.device).uniform_(0, 1)
+#     if noise_type == 'log':
+#         log_sigma_min = math.log(sigma_min)
+#         log_sigma_max = math.log(sigma_max)
+        
+#         log_sigma = log_sigma_min + u * (log_sigma_max - log_sigma_min)
+#         sigma = torch.exp(log_sigma).view(-1, 1, 1, 1)
+#     elif noise_type == 'linear':
+#         sigma = sigma_min + u * (sigma_max - sigma_min)
+#         sigma = sigma.view(-1, 1, 1, 1)
+#     else:
+#         raise ValueError(f"Invalid noise type: {noise_type}")
+
+#     noise = torch.randn_like(img)
+#     return img+noise*sigma, sigma
+
 
 
 
@@ -546,7 +568,7 @@ def train_ebm(args):
     # Initialize model
     model = SimSiamModel(img_channels=3, hidden_dim=64).to(device)
     teacher_model = SimSiamModel(img_channels=3, hidden_dim=64).to(device)
-
+    teacher_model.eval()
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
     start_epoch = 0
 
@@ -593,12 +615,15 @@ def train_ebm(args):
         
         for i, (images, _) in enumerate(tqdm(trainloader)):
             it = len(trainloader) * epoch + i  # global training iteration
+            current_lr = lr_schedule[it]
+            optimizer.param_groups[0]['lr'] = current_lr
 
             img1, img2 = images[0].to(device), images[1].to(device)  # Unpack the two views
             images = img1
             img1, sigma1 = add_noise(images)
             img2, sigma2 = add_noise(images)
             # img2 = images
+
             # log_steps = torch.linspace(0, torch.log(torch.tensor(sampler.num_steps - 1)), sampler.num_steps - 1)
             # indices = torch.exp(log_steps[torch.randint(0, sampler.num_steps - 1, (images.shape[0],))]).long()
             # indices = indices.to(images.device)
@@ -622,7 +647,7 @@ def train_ebm(args):
             
             
             # Forward pass
-            args.use_amp = True
+            args.use_amp = False
 
             with autocast(enabled=args.use_amp):
                 p1, p2, h1, h2 = model(img1, img2)
@@ -656,6 +681,9 @@ def train_ebm(args):
             if i % args.log_freq == 0:
                 visualize_augmentations(model,img1,img2,images,args.output_dir,epoch)
                 print(f'Epoch [{epoch}/{args.epochs}], Step [{i}/{len(trainloader)}], '
+                      f'lr: {current_lr:.6f}, '
+                      f'sigma1 max: {sigma1.max().item():.4f}, sigma2 max: {sigma2.max().item():.4f}, '
+                      f'sigma1 min: {sigma1.min().item():.4f}, sigma2 min: {sigma2.min().item():.4f}, '
                       f'Loss: {loss.item():.4f}, Loss_cos: {loss_cos.item():.4f}, Loss_tcr: {loss_tcr.item():.4f}')
 
         # Add visualization of augmentations periodically
@@ -701,11 +729,11 @@ def get_args_parser():
     
     # System parameters
     parser.add_argument('--data_path', default='c:/dataset', type=str)
-    parser.add_argument('--output_dir', default='F:/output/cifar10-ebm-cl-r-ema-cm')
+    parser.add_argument('--output_dir', default='F:/output/cifar10-ebm-cl-r-ema-cm-ddpm')
     parser.add_argument('--num_workers', default=4, type=int)
     parser.add_argument('--use_amp', action='store_true')
     parser.add_argument('--log_freq', default=100, type=int)
-    parser.add_argument('--save_freq', default=1, type=int)
+    parser.add_argument('--save_freq', default=20, type=int)
     parser.add_argument('--resume', default=None, type=str)
     
     return parser

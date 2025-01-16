@@ -18,32 +18,7 @@ import copy
 from karas_sampler import KarrasSampler,get_sigmas_karras
 from ibot_ctrl import utils_ibot as utils
 import math
-from scipy.stats import norm
-import torch.distributed as dist
 
-
-class LogNormalSampler:
-    def __init__(self, p_mean=-1.2, p_std=1.2, even=False):
-        self.p_mean = p_mean
-        self.p_std = p_std
-        self.even = even
-        if self.even:
-            self.inv_cdf = lambda x: norm.ppf(x, loc=p_mean, scale=p_std)
-            self.rank, self.size = dist.get_rank(), dist.get_world_size()
-
-    def sample(self, bs, device):
-        if self.even:
-            # buckets = [1/G]
-            start_i, end_i = self.rank * bs, (self.rank + 1) * bs
-            global_batch_size = self.size * bs
-            locs = (torch.arange(start_i, end_i) + torch.rand(bs)) / global_batch_size
-            log_sigmas = torch.tensor(self.inv_cdf(locs), dtype=torch.float32, device=device)
-        else:
-            log_sigmas = self.p_mean + self.p_std * torch.randn(bs, device=device)
-        sigmas = torch.exp(log_sigmas)
-        weights = torch.ones_like(sigmas)
-        return sigmas, weights
-    
 
 # Masked Autoencoder approach
 def add_mask(img, mask_ratio=0.75,patch_size=4):
@@ -248,10 +223,31 @@ class LangevinSampler:
         return (x.detach(), trajectory) if return_trajectory else x.detach()
     
 
+# def add_noise(img,sigma_min=0.01,sigma_max=0.75,noise_type='log'):
+#     """Add DDPM-style noise to images"""
+#     # u = torch.rand(img.shape[0]).to(img.device)
+#     u = torch.empty(img.shape[0], device=img.device).uniform_(0, 1)
+#     if noise_type == 'log':
+#         log_sigma_min = math.log(sigma_min)
+#         log_sigma_max = math.log(sigma_max)
+        
+#         log_sigma = log_sigma_min + u * (log_sigma_max - log_sigma_min)
+#         sigma = torch.exp(log_sigma).view(-1, 1, 1, 1)
+#     elif noise_type == 'linear':
+#         sigma = sigma_min + u * (sigma_max - sigma_min)
+#         sigma = sigma.view(-1, 1, 1, 1)
+#     else:
+#         raise ValueError(f"Invalid noise type: {noise_type}")
+
+#     noise = torch.randn_like(img)
+#     img = img * (1 - sigma) + noise * sigma
+#     return img, sigma
+
+
 def add_noise(img,sigma_min=0.002,sigma_max=80,noise_type='log'):
     """Add DDPM-style noise to images"""
-    u = torch.rand(img.shape[0]).to(img.device)
-    # u = torch.empty(img.shape[0], device=img.device).uniform_(0, 1)
+    # u = torch.rand(img.shape[0]).to(img.device)
+    u = torch.empty(img.shape[0], device=img.device).uniform_(0, 1)
     if noise_type == 'log':
         log_sigma_min = math.log(sigma_min)
         log_sigma_max = math.log(sigma_max)
@@ -266,6 +262,7 @@ def add_noise(img,sigma_min=0.002,sigma_max=80,noise_type='log'):
 
     noise = torch.randn_like(img)
     return img+noise*sigma, sigma
+
 
 
 
@@ -412,43 +409,17 @@ class SimSiamModel(nn.Module):
             nn.Linear(proj_dim, proj_dim),
             nn.BatchNorm1d(proj_dim)
         )
-        # Decoder network (new)
-        self.decoder = nn.Sequential(
-            # [B, 512, 1, 1] -> [B, 512, 2, 2]
-            nn.ConvTranspose2d(proj_dim, hidden_dim * 8, 2, 1, 0),
-            nn.BatchNorm2d(hidden_dim * 8),
-            nn.ReLU(inplace=True),
-            
-            # [B, 512, 2, 2] -> [B, 256, 4, 4]
-            nn.ConvTranspose2d(hidden_dim * 8, hidden_dim * 4, 4, 2, 1),
-            nn.BatchNorm2d(hidden_dim * 4),
-            nn.ReLU(inplace=True),
-            
-            # [B, 256, 4, 4] -> [B, 128, 8, 8]
-            nn.ConvTranspose2d(hidden_dim * 4, hidden_dim * 2, 4, 2, 1),
-            nn.BatchNorm2d(hidden_dim * 2),
-            nn.ReLU(inplace=True),
-            
-            # [B, 128, 8, 8] -> [B, 64, 16, 16]
-            nn.ConvTranspose2d(hidden_dim * 2, hidden_dim, 4, 2, 1),
-            nn.BatchNorm2d(hidden_dim),
-            nn.ReLU(inplace=True),
-            
-            # Final deconv: [B, 64, 16, 16] -> [B, 3, 32, 32]
-            nn.ConvTranspose2d(hidden_dim, img_channels, 4, 2, 1),
-            nn.Tanh()  # Output in range [-1, 1]
-        )
-
+        
     
     def forward(self, x1, x2):
         # Get representations
-        z1 = self.encoder(x1)
-        z2 = self.encoder(x2)
+        z1 = self.encoder(x1).squeeze()
+        z2 = self.encoder(x2).squeeze()
 
 
         # Get projections
-        p1 = self.decoder(z1)
-        p2 = self.decoder(z2)
+        p1 = self.projector(z1)
+        p2 = self.projector(z2)
         
         return p1, p2, p1, p2
     
@@ -528,8 +499,8 @@ def simsiam_loss(p1, p2, h1, h2):
     p1 = F.normalize(p1, p=2, dim=-1)
     p2 = F.normalize(p2, p=2, dim=-1)
     loss_tcr = -R_nonorm(p1).mean()
-    loss_tcr *=1e-2
-
+    loss_tcr *=1e-1
+    
     # Negative cosine similarity
     loss_cos =  F.cosine_similarity(h1, p2, dim=-1).mean()
     
@@ -548,20 +519,12 @@ def visualize_augmentations(model,view1,view2, image, save_path=None,epoch=0):
         save_path: path to save visualization
     """
     model.eval()
-    
-    sigmas = get_sigmas_karras(40,sigma_min=0.002,sigma_max=80.0,device=view1.device)
-    view2 = sampler.sample_euler_unet(model,view2,sigmas)
-    
     view1,view2 = view1[0],view2[0]
-
-
     # Denormalize images for visualization
     mean = torch.tensor([0.5, 0.5, 0.5]).view(3, 1, 1).to(view1.device)
     std = torch.tensor([0.5, 0.5, 0.5]).view(3, 1, 1).to(view1.device)
     view1_show = view1 * std + mean
     view2_show = view2 * std + mean
-    
-
     
     # Create visualization
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(10, 5))
@@ -579,13 +542,6 @@ def visualize_augmentations(model,view1,view2, image, save_path=None,epoch=0):
     if save_path:
         plt.savefig(os.path.join(save_path,f'epoch_{epoch}.png'))
     plt.close()
-
-
-def mean_flat(tensor):
-    """
-    Take the mean over all non-batch dimensions.
-    """
-    return tensor.mean(dim=list(range(1, len(tensor.shape))))
 
 
 # Modify the training function
@@ -606,20 +562,13 @@ def train_ebm(args):
     # Load CIFAR-10
     trainset = torchvision.datasets.CIFAR10(root=args.data_path, train=True,
                                           download=True, transform=TwoCropsTransform(transform))
-
-
-    # Filter the dataset to only include class 1
-    class_1_indices = [i for i, label in enumerate(trainset.targets) if label == 1]
-    trainset.data = trainset.data[class_1_indices]
-    trainset.targets = [trainset.targets[i] for i in class_1_indices]
-    
-
     trainloader = DataLoader(trainset, batch_size=args.batch_size,
                            shuffle=True, num_workers=args.num_workers)
 
     # Initialize model
     model = SimSiamModel(img_channels=3, hidden_dim=64).to(device)
     teacher_model = SimSiamModel(img_channels=3, hidden_dim=64).to(device)
+    teacher_model.eval()
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
     start_epoch = 0
 
@@ -630,7 +579,6 @@ def train_ebm(args):
         optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
         start_epoch = checkpoint['epoch']
 
-    
     lr_schedule = utils.cosine_scheduler(
         args.lr,  # linear scaling rule
         args.min_lr,
@@ -667,11 +615,14 @@ def train_ebm(args):
         
         for i, (images, _) in enumerate(tqdm(trainloader)):
             it = len(trainloader) * epoch + i  # global training iteration
+            current_lr = lr_schedule[it]
+            optimizer.param_groups[0]['lr'] = current_lr
 
             img1, img2 = images[0].to(device), images[1].to(device)  # Unpack the two views
             images = img1
-            img1, sigma = add_noise(images)
-            img2, _ = add_noise(images)
+            img1, sigma1 = add_noise(images)
+            img2, sigma2 = add_noise(images)
+            # img2 = images
 
             # log_steps = torch.linspace(0, torch.log(torch.tensor(sampler.num_steps - 1)), sampler.num_steps - 1)
             # indices = torch.exp(log_steps[torch.randint(0, sampler.num_steps - 1, (images.shape[0],))]).long()
@@ -682,10 +633,8 @@ def train_ebm(args):
             # snr_sigma = 1
 
             # noise = torch.randn_like(images)
-            # bs= images.shape[0] 
-            # # sigma,weights = LogNormalSampler().sample(bs,images.device)
-            # img1 = images + noise*sigma.view(-1,1,1,1)
-            # img2 = images + noise*sigma_next.view(-1,1,1,1)
+            # img1 = images + noise*sigma
+            # img2 = images + noise*sigma_next
             
             # img1,img2 = generate_adversarial_samples(model,images),images
             # img1 = images#,mask1 = add_mask(images,mask_ratio=0.4,patch_size=4)
@@ -698,26 +647,24 @@ def train_ebm(args):
             
             
             # Forward pass
-            args.use_amp = True
+            # args.use_amp = True
+            args.use_amp = False
 
             with autocast(enabled=args.use_amp):
                 p1, p2, h1, h2 = model(img1, img2)
+                with torch.no_grad():
+                    p1_t, p2_t, h1_t, h2_t = teacher_model(img1, img2)
+                # Compute loss
 
-                # p1, p2, h1, h2 = model(img1, img2)
-                # with torch.no_grad():
-                #     p1_t, p2_t, h1_t, h2_t = teacher_model(img1, img2)
-                # # Compute loss
-
-                # loss_cos1,loss_tcr1 = simsiam_loss(p1, p2_t.detach(), h1, h2_t)
-                # loss_cos2,loss_tcr2 = simsiam_loss(p2, p1_t.detach(), h2, h1_t)
+                loss_cos1,loss_tcr1 = simsiam_loss(p1, p2_t.detach(), h1, h2_t)
+                loss_cos2,loss_tcr2 = simsiam_loss(p2, p1_t.detach(), h2, h1_t)
                 
-                # loss_cos = (loss_cos1 + loss_cos2)/2
-                # loss_tcr = (loss_tcr1 + loss_tcr2)/2
+                loss_cos = (loss_cos1 + loss_cos2)/2
+                loss_tcr = (loss_tcr1 + loss_tcr2)/2
                 
                 
                 # loss_cos,loss_tcr = simsiam_loss(p1, p2, h1, h2)
-                loss = mean_flat((p1 - images) ** 2).mean()
-
+                loss = loss_cos+loss_tcr
             # Backward pass
             optimizer.zero_grad()
             scaler.scale(loss).backward()
@@ -735,7 +682,10 @@ def train_ebm(args):
             if i % args.log_freq == 0:
                 visualize_augmentations(model,img1,img2,images,args.output_dir,epoch)
                 print(f'Epoch [{epoch}/{args.epochs}], Step [{i}/{len(trainloader)}], '
-                      f'Loss: {loss.item():.4f},sigma max: {sigma.max():.4f},sigma min: {sigma.min():.4f}')
+                      f'lr: {current_lr:.6f}, '
+                      f'sigma1 max: {sigma1.max().item():.4f}, sigma2 max: {sigma2.max().item():.4f}, '
+                      f'sigma1 min: {sigma1.min().item():.4f}, sigma2 min: {sigma2.min().item():.4f}, '
+                      f'Loss: {loss.item():.4f}, Loss_cos: {loss_cos.item():.4f}, Loss_tcr: {loss_tcr.item():.4f}')
 
         # Add visualization of augmentations periodically
         if epoch % args.save_freq == 0:
@@ -780,12 +730,11 @@ def get_args_parser():
     
     # System parameters
     parser.add_argument('--data_path', default='c:/dataset', type=str)
-    parser.add_argument('--output_dir', default='F:/output/cifar10-ebm-cl-r-ema-edm')
-
+    parser.add_argument('--output_dir', default='F:/output/cifar10-ebm-cl-r-ema-cm-edm')
     parser.add_argument('--num_workers', default=4, type=int)
     parser.add_argument('--use_amp', action='store_true')
     parser.add_argument('--log_freq', default=100, type=int)
-    parser.add_argument('--save_freq', default=1, type=int)
+    parser.add_argument('--save_freq', default=20, type=int)
     parser.add_argument('--resume', default=None, type=str)
     
     return parser

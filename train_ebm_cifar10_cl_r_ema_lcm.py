@@ -546,7 +546,7 @@ def train_ebm(args):
     # Initialize model
     model = SimSiamModel(img_channels=3, hidden_dim=64).to(device)
     teacher_model = SimSiamModel(img_channels=3, hidden_dim=64).to(device)
-
+    teacher_model.eval()
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
     start_epoch = 0
 
