@@ -514,8 +514,8 @@ def get_args_parser():
     parser.add_argument('--batch_size', default=128, type=int)
     parser.add_argument('--lr', default=1e-4, type=float)
 
-    parser.add_argument('--data_path', default='/home/qianqian/repo/cnn_cl/data', type=str)
-    parser.add_argument('--output_dir', default='./output/cifar10-ebm-gan-r3gan')
+    parser.add_argument('--data_path', default='c:/dataset', type=str)
+    parser.add_argument('--output_dir', default='F:/output/cifar10-ebm-gan-r3gan')
     parser.add_argument('--num_workers', default=4, type=int)
     parser.add_argument('--use_amp', action='store_true')
     parser.add_argument('--log_freq', default=100, type=int)
