@@ -46,6 +46,11 @@ from karas_sampler import KarrasSampler,get_sigmas_karras
 #         e = -torch.log(torch.sigmoid(logits))
 #         return e
 
+def zero_centered_gradient_penalty(samples, critics):
+    critics = -R(critics)
+    grad, = torch.autograd.grad(outputs=critics, inputs=samples, create_graph=True)
+    return grad.square().sum([1, 2, 3])
+
 sampler = KarrasSampler()
 
 def R(Z,eps=0.5):
@@ -139,6 +144,24 @@ def mcr_nv_loss(ps):
     c = ps.shape[-1]
     b = ps.shape[-2]
     n_views = len(ps)
+    ps =F.normalize(ps,dim=-1)
+    
+    joint_p = ps.reshape(-1,c)
+    comp = R_nonorm(joint_p)
+    
+    expd = 0
+    for i in range(n_views):
+        expd += R_nonorm(ps[i,:,:])/n_views
+    
+    return expd.mean(),comp.mean()
+    
+
+
+def mcr_nv_loss(ps):
+    c = ps.shape[-1]
+    b = ps.shape[-2]
+    n_views = len(ps)
+    ps =F.normalize(ps,dim=-1)
     
     joint_p = ps.reshape(-1,c)
     expd = R_nonorm(joint_p)
@@ -147,8 +170,26 @@ def mcr_nv_loss(ps):
     for i in range(b):
         comp += R_nonorm(ps[:,i,:])/b
     
-    return expd.mean() - comp.mean()
+    return expd.mean(),comp.mean()
+
+
+
+def mcr_nv_loss(ps):
+    c = ps.shape[-1]
+    b = ps.shape[-2]
+    n_views = len(ps)
+    ps =F.normalize(ps,dim=-1)
     
+    
+    expd = 0
+    for i in range(n_views):
+        expd += R_nonorm(ps[i,:,:])/n_views
+    
+    comp = 0
+    for i in range(b):
+        comp += R_nonorm(ps[:,i,:])/b
+    
+    return expd.mean(),comp.mean()
 
 
 def R_nonorm(Z,eps=0.5):
@@ -215,19 +256,26 @@ def train_ebm(args):
             views = [img.to(device) for img in images]
 
             ps = []
+            loss_gp = 0
             for view in views:
+                view = view.detach().requires_grad_(True)
                 p = model(view)
                 ps.append(p)
-            
+                loss_gp += zero_centered_gradient_penalty(view,p).mean()
+
+            loss_gp/=len(views)
             ps = torch.stack(ps,dim=0)
             ps = F.normalize(ps,dim=-1)
 
             # loss_tcr = -R_nonorm(ps.mean(dim=0))
-            loss_mcr = -mcr_nv_loss(ps)
+            
+            expd_loss,comp_loss = mcr_nv_loss(ps)
+            loss_mcr = -expd_loss+comp_loss
             loss_cos = (1 - F.cosine_similarity(ps[0], ps[-1], dim=-1).mean())
 
+
             # Compute loss
-            loss = loss_mcr  
+            loss = loss_mcr + loss_gp*args.gp_weight
             # Backward pass
             optimizer.zero_grad()
             loss.backward()
@@ -237,7 +285,8 @@ def train_ebm(args):
             
             if i % args.log_freq == 0:
                 print(f'Epoch [{epoch}/{args.epochs}], Step [{i}/{len(trainloader)}], '
-                      f'Loss: {loss.item():.4f},  Loss_mcr: {loss_mcr.item():.4f}, Loss_cos: {loss_cos.item():.4f}')
+                      f'Loss_expd: {expd_loss.item():.4f}, Loss_comp: {comp_loss.item():.4f}, '
+                      f'Loss: {loss.item():.4f},  Loss_mcr: {loss_mcr.item():.4f}, Loss_cos: {loss_cos.item():.4f}, Loss_gp: {loss_gp.item():.4f}')
 
         # Add visualization of augmentations periodically
         if epoch % args.save_freq == 0:
@@ -276,7 +325,7 @@ def get_args_parser():
     parser.add_argument('--langevin_steps', default=60, type=int)
     parser.add_argument('--step_size', default=10.0, type=float)
     parser.add_argument('--noise_scale', default=0.005, type=float)
-    
+    parser.add_argument('--gp_weight', default=0.5, type=float)
     # System parameters
     parser.add_argument('--data_path', default='c:/dataset', type=str)
     parser.add_argument('--output_dir', default='F:/output/cifar10-ebm-cl-multiview-mcr')

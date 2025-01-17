@@ -4,7 +4,7 @@ python train_ebm_cifar10_gan_r3gan_ctrl_vit_dec_imagenet.py `
     --img_size 64 `
     --patch_size 8 `
     --epochs 1200 `
-    --batch_size 128 `
+    --batch_size 32 `
     --embed_dim 192 `
     --decoder_embed_dim 192 `
     --encoder_depth 12 `
