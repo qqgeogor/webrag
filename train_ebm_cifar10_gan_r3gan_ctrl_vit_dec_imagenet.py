@@ -473,7 +473,7 @@ def train_ebm_gan(args):
             g_optimizer.zero_grad()
             
             # Generate new fake samples
-            z = torch.randn(batch_size, args.emb, device=device)
+            z = torch.randn(batch_size, args.embed_dim, device=device)
             c_real = discriminator.forward_feature(real_samples.detach()).squeeze()
 
             fake_samples = generator.generate(z,c_real.detach())
