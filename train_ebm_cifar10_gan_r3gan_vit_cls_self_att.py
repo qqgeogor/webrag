@@ -380,23 +380,14 @@ class MaskedAutoencoderViT(nn.Module):
         cls_tokens = cls_token.expand(B, -1, -1)
         x = torch.cat((cls_tokens, x), dim=1)
         
-        # Pass through transformer blocks until target layer
-        target_block = self.blocks[layer_idx]
-        
-        # Get attention weights from target block
-        with torch.no_grad():
-            # Forward pass until attention
-            attn = target_block.attn
-            qkv = attn.qkv(x)
-            qkv = rearrange(qkv, 'b n (h d qkv) -> qkv b h n d', h=attn.num_heads, qkv=3)
-            q, k, v = qkv[0], qkv[1], qkv[2]   # b h n d
-            
-            # Calculate attention weights
-            attn_weights = (q @ k.transpose(-2, -1)) * attn.scale
-            attn_weights = attn_weights.softmax(dim=-1)  # b h n n
-            
-        return attn_weights
 
+        for i in range(len(self.blocks)):
+            if i == layer_idx:
+                return self.blocks[i](x,return_attention=True)
+            else:
+                x = self.blocks[i](x)
+        return x
+    
 def get_2d_sincos_pos_embed(embed_dim, grid_size, cls_token=False):
     """Generate 2D sinusoidal position embedding."""
     grid_h = np.arange(grid_size, dtype=np.float32)
