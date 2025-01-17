@@ -347,7 +347,7 @@ def train_ebm_gan(args):
 
     # Data preprocessing
     transform = transforms.Compose([
-        transforms.RandomResizedCrop(224),  # Resize to 224x224 for ImageNet
+        transforms.RandomResizedCrop(args.img_size),  # Resize to 224x224 for ImageNet
         transforms.RandomHorizontalFlip(),
         transforms.ToTensor(),
         transforms.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225))  # ImageNet normalization
@@ -365,7 +365,8 @@ def train_ebm_gan(args):
         in_chans=args.in_chans, 
         embed_dim=args.embed_dim, 
         decoder_embed_dim=args.decoder_embed_dim,
-        depth=args.encoder_depth, 
+        depth=0, 
+        decoder_depth=args.decoder_depth,
         num_heads=args.num_heads
     ).to(device)
     # 
@@ -377,7 +378,8 @@ def train_ebm_gan(args):
         in_chans=args.in_chans, 
         embed_dim=args.embed_dim, 
         decoder_embed_dim=args.decoder_embed_dim,
-        depth=args.decoder_depth, 
+        depth=args.encoder_depth,
+        decoder_depth = 0, 
         num_heads=args.num_heads
     ).to(device)
         

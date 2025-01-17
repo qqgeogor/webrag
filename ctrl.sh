@@ -1,0 +1,12 @@
+python train_ebm_cifar10_gan_r3gan_ctrl_vit_dec_imagenet.py \
+    --data_path C:/dataset/tiny-imagenet/train/ \
+    --output_dir F:/output/tiny_imagenet_ctrl \
+    --img_size 64 \
+    --patch_size 8 \
+    --epochs 1200 \
+    --batch_size 128 \
+    --embed_dim 192 \
+    --decoder_embed_dim 192 \
+    --encoder_depth 12 \
+    --decoder_depth 4 \
+    --num_heads 3 
