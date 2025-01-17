@@ -1,5 +1,5 @@
 python train_ebm_cifar10_gan_r3gan_ctrl_vit_dec_imagenet.py \
-    --data_path /root/autodl-tmp/imagenet100/train/ \
+    --data_path /root/autodl-tmp/imagenet100/ \
     --output_dir /root/autodl-tmp/output/imagenet100_ctrl \
     --img_size 128 \
     --patch_size 16 \
