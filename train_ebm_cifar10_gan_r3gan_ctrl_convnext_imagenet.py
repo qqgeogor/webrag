@@ -817,7 +817,7 @@ def get_args_parser():
     parser.add_argument('--lr', default=1e-4, type=float)
     
     parser.add_argument('--data_path', default='/root/autodl-pub/imagenet100/train', type=str)
-    parser.add_argument('--output_dir', default='/root/autodl-tmp/output/imagenet100-r3gan-ctrl-convnext')
+    parser.add_argument('--output_dir', default='./output/imagenet100-r3gan-ctrl-convnext')
     parser.add_argument('--num_workers', default=16, type=int)
     parser.add_argument('--use_amp', action='store_true')
     parser.add_argument('--log_freq', default=100, type=int)
