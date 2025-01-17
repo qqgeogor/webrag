@@ -44,10 +44,10 @@ class EnergyNet(nn.Module):
             nn.LeakyReLU(0.2),
             
             # Final conv to scalar energy: [B, 512, 2, 2] -> [B, 1, 1, 1]
-            nn.Conv2d(hidden_dim * 8, 128, 2, 1, 0)
+            nn.Conv2d(hidden_dim * 8, 192, 2, 1, 0)
         )
 
-        self.head = nn.Linear(128, 1)
+        self.head = nn.Linear(192, 1)
         
         # Initialize weights properly
         self.apply(self._init_weights)
@@ -58,6 +58,12 @@ class EnergyNet(nn.Module):
             if m.bias is not None:
                 nn.init.constant_(m.bias.data, 0)
     
+    def forward_feature(self, x):
+        return self.net(x).squeeze()
+
+    def discriminate(self, x):
+        return self(x)
+
     def forward(self, x):
         logits = self.net(x).squeeze()
         logits = self.head(logits)
@@ -371,16 +377,16 @@ def train_ebm_gan(args):
         ).to(device)
     # 
     # discriminator = ResNetEnergyNet(img_channels=3, hidden_dim=64).to(device)
-    # discriminator = EnergyNet(img_channels=3, hidden_dim=64).to(device)
-    discriminator = MaskedAutoencoderViT(
-        img_size=32, 
-        patch_size=4, 
-        in_chans=3, 
-        embed_dim=192, 
-        decoder_embed_dim=args.latent_dim,
-        depth=6, 
-        num_heads=3
-        ).to(device)
+    discriminator = EnergyNet(img_channels=3, hidden_dim=64).to(device)
+    # discriminator = MaskedAutoencoderViT(
+    #     img_size=32, 
+    #     patch_size=4, 
+    #     in_chans=3, 
+    #     embed_dim=192, 
+    #     decoder_embed_dim=args.latent_dim,
+    #     depth=6, 
+    #     num_heads=3
+    #     ).to(device)
         
     # Optimizers
     g_optimizer = torch.optim.AdamW(
