@@ -20,10 +20,7 @@ class CifarClassifier(nn.Module):
                 param.requires_grad = False
             
         self.classifier = nn.Sequential(
-            nn.Linear(128, 512),
-            nn.BatchNorm1d(512),
-            nn.ReLU(inplace=True),
-            nn.Linear(512, num_classes)
+            nn.Linear(128, num_classes)
         )
         
     def forward(self, x):
