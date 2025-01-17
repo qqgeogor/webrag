@@ -360,26 +360,26 @@ def train_ebm_gan(args):
                              shuffle=True, num_workers=args.num_workers)
 
     generator = MaskedAutoencoderViT(
-        img_size=224, 
-        patch_size=16, 
-        in_chans=3, 
-        embed_dim=384, 
-        decoder_embed_dim=args.latent_dim,
-        depth=8, 
-        num_heads=12
-        ).to(device)
+        img_size=args.img_size, 
+        patch_size=args.patch_size, 
+        in_chans=args.in_chans, 
+        embed_dim=args.embed_dim, 
+        decoder_embed_dim=args.decoder_embed_dim,
+        depth=args.encoder_depth, 
+        num_heads=args.num_heads
+    ).to(device)
     # 
     # discriminator = ResNetEnergyNet(img_channels=3, hidden_dim=64).to(device)
     # discriminator = EnergyNet(img_channels=3, hidden_dim=64).to(device)
     discriminator = MaskedAutoencoderViT(
-        img_size=224, 
-        patch_size=16, 
-        in_chans=3, 
-        embed_dim=384, 
-        decoder_embed_dim=args.latent_dim,
-        depth=12, 
-        num_heads=12
-        ).to(device)
+        img_size=args.img_size, 
+        patch_size=args.patch_size, 
+        in_chans=args.in_chans, 
+        embed_dim=args.embed_dim, 
+        decoder_embed_dim=args.decoder_embed_dim,
+        depth=args.decoder_depth, 
+        num_heads=args.num_heads
+    ).to(device)
         
     # Optimizers
     g_optimizer = torch.optim.AdamW(
@@ -581,6 +581,24 @@ def get_args_parser():
                         help='Number of discriminator updates per generator update')
     parser.add_argument('--gp_weight', default=0.05, type=float,
                         help='Weight of gradient penalty')
+    
+    # Add model architecture parameters
+    parser.add_argument('--img_size', default=224, type=int,
+                        help='Input image size')
+    parser.add_argument('--patch_size', default=16, type=int,
+                        help='Patch size for ViT')
+    parser.add_argument('--in_chans', default=3, type=int,
+                        help='Number of input channels')
+    parser.add_argument('--embed_dim', default=384, type=int,
+                        help='Embedding dimension')
+    parser.add_argument('--decoder_embed_dim', default=384, type=int,
+                        help='Decoder embedding dimension')
+    parser.add_argument('--encoder_depth', default=8, type=int,
+                        help='Depth of encoder')
+    parser.add_argument('--decoder_depth', default=12, type=int,
+                        help='Depth of decoder')
+    parser.add_argument('--num_heads', default=12, type=int,
+                        help='Number of attention heads')
     
     # Modify learning rates
     parser.add_argument('--g_beta1', default=0.5, type=float,
