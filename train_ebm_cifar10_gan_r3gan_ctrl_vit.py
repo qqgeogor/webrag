@@ -25,25 +25,25 @@ class EnergyNet(nn.Module):
         self.net = nn.Sequential(
             # Initial conv: [B, 3, 32, 32] -> [B, 64, 16, 16]
             nn.Conv2d(img_channels, hidden_dim, 4, 2, 1),
-            # nn.GroupNorm(8, hidden_dim),  # Add normalization
-            nn.LeakyReLU(0.2),
+            nn.BatchNorm2d(hidden_dim),
+            nn.ReLU(inplace=True),
             
             # [B, 64, 16, 16] -> [B, 128, 8, 8]
             nn.Conv2d(hidden_dim, hidden_dim * 2, 4, 2, 1),
-            # nn.GroupNorm(8, hidden_dim * 2),  # Add normalization
-            nn.LeakyReLU(0.2),
+            nn.BatchNorm2d(hidden_dim * 2),
+            nn.ReLU(inplace=True),
             
             # [B, 128, 8, 8] -> [B, 256, 4, 4]
             nn.Conv2d(hidden_dim * 2, hidden_dim * 4, 4, 2, 1),
-            # nn.GroupNorm(8, hidden_dim * 4),  # Add normalization
-            nn.LeakyReLU(0.2),
+            nn.BatchNorm2d(hidden_dim * 4),
+            nn.ReLU(inplace=True),
             
             # [B, 256, 4, 4] -> [B, 512, 2, 2]
             nn.Conv2d(hidden_dim * 4, hidden_dim * 8, 4, 2, 1),
-            # nn.GroupNorm(8, hidden_dim * 8),  # Add normalization
-            nn.LeakyReLU(0.2),
+            nn.BatchNorm2d(hidden_dim * 8),
+            nn.ReLU(inplace=True),
             
-            # Final conv to scalar energy: [B, 512, 2, 2] -> [B, 1, 1, 1]
+            # Final conv: [B, 512, 2, 2] -> [B, 512, 1, 1]
             nn.Conv2d(hidden_dim * 8, 192, 2, 1, 0)
         )
 
@@ -419,8 +419,8 @@ def train_ebm_gan(args):
         if os.path.isfile(checkpoint_path):
             print(f"Loading checkpoint from {checkpoint_path}")
             checkpoint = torch.load(checkpoint_path)
-            generator.load_state_dict(checkpoint['generator_state_dict'])
-            discriminator.load_state_dict(checkpoint['discriminator_state_dict'])
+            generator.load_state_dict(checkpoint['generator_state_dict'],strict=False)
+            discriminator.load_state_dict(checkpoint['discriminator_state_dict'],strict=False)
             g_optimizer.load_state_dict(checkpoint['g_optimizer_state_dict'])
             d_optimizer.load_state_dict(checkpoint['d_optimizer_state_dict'])
             g_scheduler.load_state_dict(checkpoint['g_scheduler_state_dict'])
