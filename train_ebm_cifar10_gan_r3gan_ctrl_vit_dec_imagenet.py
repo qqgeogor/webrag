@@ -596,7 +596,7 @@ def get_args_parser():
     parser.add_argument('--batch_size', default=128, type=int)
     parser.add_argument('--lr', default=1e-4, type=float)
     
-    parser.add_argument('--data_path', default='/root/autodl-pub/ImageNet/ILSVRC2012/train', type=str)
+    parser.add_argument('--data_path', default='/root/autodl-pub/ImageNet/ILSVRC2012/', type=str)
     parser.add_argument('--output_dir', default='./output/cifar10-ebm-gan-r3gan-ctrl-vit-dec')
     parser.add_argument('--num_workers', default=4, type=int)
     parser.add_argument('--use_amp', action='store_true')
