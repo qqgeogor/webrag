@@ -10,3 +10,7 @@ python train_ebm_cifar10_gan_r3gan_ctrl_vit_dec_imagenet.py \
     --encoder_depth 12 \
     --decoder_depth 4 \
     --num_heads 3 
+
+
+ python visualize_attention.py     --checkpoint_path ./output/cifar10-ebm-gan-r3gan-ctrl-vit-dec/ebm_gan_checkpoint_160.pth     --output_dir ./attention_vis     --num_samples 10     --layer_idx 5  # Visualize the third layer (0-based indexing)
+ 

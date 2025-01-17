@@ -190,8 +190,8 @@ def visualize_attention(args):
     if os.path.isfile(args.checkpoint_path):
         print(f"Loading checkpoint from {args.checkpoint_path}")
         checkpoint = torch.load(args.checkpoint_path, map_location=device)
-        if 'generator_state_dict' in checkpoint:
-            model.load_state_dict(checkpoint['generator_state_dict'])
+        if 'discriminator_state_dict' in checkpoint:
+            model.load_state_dict(checkpoint['discriminator_state_dict'])
         else:
             model.load_state_dict(checkpoint)
     else:
