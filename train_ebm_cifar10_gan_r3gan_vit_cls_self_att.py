@@ -122,6 +122,14 @@ class MaskedAutoencoderViT(nn.Module):
 
          )
         
+        self.project_cls = nn.Sequential(
+            # Initial projection
+            nn.Linear(decoder_embed_dim, decoder_embed_dim * num_patches),
+            # Reshape layer instead of lambda
+            Reshape((decoder_embed_dim, int(num_patches**0.5), int(num_patches**0.5))),
+
+         )
+        
     def initialize_weights(self):
         # Initialize position embeddings
         pos_embed = get_2d_sincos_pos_embed(self.pos_embed.shape[-1], 
@@ -238,13 +246,24 @@ class MaskedAutoencoderViT(nn.Module):
     
     
     def generate(self, x,contexts=None):
-        
+        # if as_cls_token:
+        #     contexts = self.decoder_embed(contexts)
+               
+        #     x = self.project_cls(x)
+        #     b,c,h,w = x.shape
+        #     x = x.view(b,c,h*w).transpose(1,2)
+        #     x = torch.cat((contexts.unsqueeze(1),x),dim=1)
+            
+        #     x = x + self.decoder_pos_embed
+        # else:
+
         contexts = self.decoder_embed(contexts)
         x = torch.cat([contexts,x],dim=1)
         
         x = self.project_latent(x)
         b,c,h,w = x.shape
         x = x.view(b,c,h*w).transpose(1,2)
+        x = x + self.decoder_pos_embed[:,1:,:]
         
         # if contexts is not None:
         #     len_contexts = contexts.shape[1]
@@ -257,7 +276,6 @@ class MaskedAutoencoderViT(nn.Module):
             
         # else:
         #     x = x + self.decoder_pos_embed[:,1:,:]
-        x = x + self.decoder_pos_embed[:,1:,:]
 
         for blk in self.decoder_blocks:
             if self.use_checkpoint:
@@ -266,8 +284,8 @@ class MaskedAutoencoderViT(nn.Module):
                 x = blk(x)
         x = self.decoder_norm(x)
         x = self.decoder_pred(x)
-        # if contexts is not None:
-        #     x = x[:, len_contexts:, :]  # Remove CLS token
+        # if as_cls_token is not None:
+        #     x = x[:, 1:, :]  # Remove CLS token
 
         x = self.unpatchify(x)
 

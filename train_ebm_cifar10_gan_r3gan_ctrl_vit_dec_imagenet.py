@@ -347,46 +347,39 @@ def train_ebm_gan(args):
 
     # Data preprocessing
     transform = transforms.Compose([
+        transforms.RandomResizedCrop(224),  # Resize to 224x224 for ImageNet
         transforms.RandomHorizontalFlip(),
         transforms.ToTensor(),
-        transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
+        transforms.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225))  # ImageNet normalization
     ])
 
-    # Load CIFAR-10
-    trainset = torchvision.datasets.CIFAR10(root=args.data_path, train=True,
-                                          download=True, transform=transform)
+    # Load ImageNet using ImageFolder
+    trainset = torchvision.datasets.ImageFolder(root=args.data_path, transform=transform)
     
-    # Filter the dataset to only include class 1
-    if args.cls!=-1:
-        class_1_indices = [i for i, label in enumerate(trainset.targets) if label == args.cls]
-        trainset.data = trainset.data[class_1_indices]
-        trainset.targets = [trainset.targets[i] for i in class_1_indices]
-    
-
     trainloader = DataLoader(trainset, batch_size=args.batch_size,
-                           shuffle=True, num_workers=args.num_workers)
+                             shuffle=True, num_workers=args.num_workers)
 
     generator = MaskedAutoencoderViT(
-        img_size=32, 
-        patch_size=4, 
-        in_chans=3, 
-        embed_dim=192, 
-        decoder_embed_dim=args.latent_dim,
-        depth=6, 
-        num_heads=3
-        ).to(device)
+        img_size=args.img_size, 
+        patch_size=args.patch_size, 
+        in_chans=args.in_chans, 
+        embed_dim=args.embed_dim, 
+        decoder_embed_dim=args.decoder_embed_dim,
+        depth=args.encoder_depth, 
+        num_heads=args.num_heads
+    ).to(device)
     # 
     # discriminator = ResNetEnergyNet(img_channels=3, hidden_dim=64).to(device)
-    discriminator = EnergyNet(img_channels=3, hidden_dim=64).to(device)
-    # discriminator = MaskedAutoencoderViT(
-    #     img_size=32, 
-    #     patch_size=4, 
-    #     in_chans=3, 
-    #     embed_dim=192, 
-    #     decoder_embed_dim=args.latent_dim,
-    #     depth=6, 
-    #     num_heads=3
-    #     ).to(device)
+    # discriminator = EnergyNet(img_channels=3, hidden_dim=64).to(device)
+    discriminator = MaskedAutoencoderViT(
+        img_size=args.img_size, 
+        patch_size=args.patch_size, 
+        in_chans=args.in_chans, 
+        embed_dim=args.embed_dim, 
+        decoder_embed_dim=args.decoder_embed_dim,
+        depth=args.decoder_depth, 
+        num_heads=args.num_heads
+    ).to(device)
         
     # Optimizers
     g_optimizer = torch.optim.AdamW(
@@ -581,13 +574,31 @@ def get_args_parser():
     parser = argparse.ArgumentParser('EBM-GAN training for CIFAR-10')
     
     # Add GAN-specific parameters
-    parser.add_argument('--latent_dim', default=192, type=int)
+    parser.add_argument('--latent_dim', default=384, type=int)
     parser.add_argument('--g_lr', default=1e-4, type=float)
     parser.add_argument('--d_lr', default=1e-4, type=float)
     parser.add_argument('--n_critic', default=1, type=int,
                         help='Number of discriminator updates per generator update')
     parser.add_argument('--gp_weight', default=0.05, type=float,
                         help='Weight of gradient penalty')
+    
+    # Add model architecture parameters
+    parser.add_argument('--img_size', default=224, type=int,
+                        help='Input image size')
+    parser.add_argument('--patch_size', default=16, type=int,
+                        help='Patch size for ViT')
+    parser.add_argument('--in_chans', default=3, type=int,
+                        help='Number of input channels')
+    parser.add_argument('--embed_dim', default=384, type=int,
+                        help='Embedding dimension')
+    parser.add_argument('--decoder_embed_dim', default=384, type=int,
+                        help='Decoder embedding dimension')
+    parser.add_argument('--encoder_depth', default=8, type=int,
+                        help='Depth of encoder')
+    parser.add_argument('--decoder_depth', default=12, type=int,
+                        help='Depth of decoder')
+    parser.add_argument('--num_heads', default=12, type=int,
+                        help='Number of attention heads')
     
     # Modify learning rates
     parser.add_argument('--g_beta1', default=0.5, type=float,
@@ -603,12 +614,12 @@ def get_args_parser():
     parser.add_argument('--batch_size', default=128, type=int)
     parser.add_argument('--lr', default=1e-4, type=float)
     
-    parser.add_argument('--data_path', default='c:/dataset', type=str)
-    parser.add_argument('--output_dir', default='F:/output/cifar10-ebm-gan-r3gan-ctrl-vit')
-    parser.add_argument('--num_workers', default=4, type=int)
+    parser.add_argument('--data_path', default='/root/autodl-pub/imagenet100/train', type=str)
+    parser.add_argument('--output_dir', default='/root/autodl-tmp/output/imagenet100-r3gan-ctrl-vit')
+    parser.add_argument('--num_workers', default=16, type=int)
     parser.add_argument('--use_amp', action='store_true')
     parser.add_argument('--log_freq', default=100, type=int)
-    parser.add_argument('--save_freq', default=1, type=int)
+    parser.add_argument('--save_freq', default=5, type=int)
     
     # Add learning rate scheduling parameters
     parser.add_argument('--min_lr', default=1e-6, type=float,

@@ -25,25 +25,25 @@ class EnergyNet(nn.Module):
         self.net = nn.Sequential(
             # Initial conv: [B, 3, 32, 32] -> [B, 64, 16, 16]
             nn.Conv2d(img_channels, hidden_dim, 4, 2, 1),
-            nn.BatchNorm2d(hidden_dim),
-            nn.ReLU(inplace=True),
+            # nn.GroupNorm(8, hidden_dim),  # Add normalization
+            nn.LeakyReLU(0.2),
             
             # [B, 64, 16, 16] -> [B, 128, 8, 8]
             nn.Conv2d(hidden_dim, hidden_dim * 2, 4, 2, 1),
-            nn.BatchNorm2d(hidden_dim * 2),
-            nn.ReLU(inplace=True),
+            # nn.GroupNorm(8, hidden_dim * 2),  # Add normalization
+            nn.LeakyReLU(0.2),
             
             # [B, 128, 8, 8] -> [B, 256, 4, 4]
             nn.Conv2d(hidden_dim * 2, hidden_dim * 4, 4, 2, 1),
-            nn.BatchNorm2d(hidden_dim * 4),
-            nn.ReLU(inplace=True),
+            # nn.GroupNorm(8, hidden_dim * 4),  # Add normalization
+            nn.LeakyReLU(0.2),
             
             # [B, 256, 4, 4] -> [B, 512, 2, 2]
             nn.Conv2d(hidden_dim * 4, hidden_dim * 8, 4, 2, 1),
-            nn.BatchNorm2d(hidden_dim * 8),
-            nn.ReLU(inplace=True),
+            # nn.GroupNorm(8, hidden_dim * 8),  # Add normalization
+            nn.LeakyReLU(0.2),
             
-            # Final conv: [B, 512, 2, 2] -> [B, 512, 1, 1]
+            # Final conv to scalar energy: [B, 512, 2, 2] -> [B, 1, 1, 1]
             nn.Conv2d(hidden_dim * 8, 192, 2, 1, 0)
         )
 
@@ -419,8 +419,8 @@ def train_ebm_gan(args):
         if os.path.isfile(checkpoint_path):
             print(f"Loading checkpoint from {checkpoint_path}")
             checkpoint = torch.load(checkpoint_path)
-            generator.load_state_dict(checkpoint['generator_state_dict'],strict=False)
-            discriminator.load_state_dict(checkpoint['discriminator_state_dict'],strict=False)
+            generator.load_state_dict(checkpoint['generator_state_dict'])
+            discriminator.load_state_dict(checkpoint['discriminator_state_dict'])
             g_optimizer.load_state_dict(checkpoint['g_optimizer_state_dict'])
             d_optimizer.load_state_dict(checkpoint['d_optimizer_state_dict'])
             g_scheduler.load_state_dict(checkpoint['g_scheduler_state_dict'])
@@ -446,7 +446,7 @@ def train_ebm_gan(args):
                 c_real = discriminator.forward_feature(real_samples.detach()).squeeze()
 
                 real_samples = real_samples.detach().requires_grad_(True)
-                fake_samples = generator.generate(z,c_real.detach()).detach().requires_grad_(True)
+                fake_samples = generator.generate(z,c_real.detach(),as_cls_token=True).detach().requires_grad_(True)
                 
                 c_fake = discriminator.forward_feature(fake_samples.detach()).squeeze()
 
@@ -481,7 +481,7 @@ def train_ebm_gan(args):
             z = torch.randn(batch_size, args.latent_dim, device=device)
             c_real = discriminator.forward_feature(real_samples.detach()).squeeze()
 
-            fake_samples = generator.generate(z,c_real.detach())
+            fake_samples = generator.generate(z,c_real.detach(),as_cls_token=True)
             fake_energy = discriminator.discriminate(fake_samples)
             real_energy = discriminator.discriminate(real_samples)
 
@@ -537,7 +537,7 @@ def save_gan_samples(generator, discriminator, epoch, output_dir, device, n_samp
         z = torch.randn(batch_size, args.latent_dim, device=device)
         c_real = discriminator.forward_feature(real_samples.detach()).squeeze()
 
-        fake_samples = generator.generate(z,c_real.detach())
+        fake_samples = generator.generate(z,c_real.detach(),as_cls_token=True)
         
         # Changed 'range' to 'value_range'
         grid = make_grid(fake_samples, nrow=6, normalize=True, value_range=(-1, 1))
@@ -603,8 +603,8 @@ def get_args_parser():
     parser.add_argument('--batch_size', default=128, type=int)
     parser.add_argument('--lr', default=1e-4, type=float)
     
-    parser.add_argument('--data_path', default='c:/dataset', type=str)
-    parser.add_argument('--output_dir', default='F:/output/cifar10-ebm-gan-r3gan-ctrl-vit')
+    parser.add_argument('--data_path', default='/home/qianqian/repo/cnn_cl/data', type=str)
+    parser.add_argument('--output_dir', default='./output/cifar10-ebm-gan-r3gan-ctrl-vit-enc')
     parser.add_argument('--num_workers', default=4, type=int)
     parser.add_argument('--use_amp', action='store_true')
     parser.add_argument('--log_freq', default=100, type=int)
