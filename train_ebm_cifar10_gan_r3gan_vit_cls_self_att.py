@@ -20,7 +20,7 @@ from torch.utils.data import DataLoader
 from functools import partial
 import numpy as np
 from timm.models.vision_transformer import PatchEmbed#, Block
-from ibot_ctrl.models.vision_transformer import Block
+from vit_transformer import Block
 from timm.models.layers import trunc_normal_
 import os
 import matplotlib.pyplot as plt
@@ -206,7 +206,7 @@ class MaskedAutoencoderViT(nn.Module):
             else:
                 x = blk(x)
         x = self.norm(x)
-        return x
+        return x[:,0,:]
 
 
     def discriminate(self, x):
@@ -239,7 +239,7 @@ class MaskedAutoencoderViT(nn.Module):
     
     def generate(self, x,contexts=None):
         
-        contexts = self.decoder_embed(contexts)[:,0]
+        contexts = self.decoder_embed(contexts)
         x = torch.cat([contexts,x],dim=1)
         
         x = self.project_latent(x)

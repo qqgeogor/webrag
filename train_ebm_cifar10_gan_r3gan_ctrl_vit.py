@@ -11,207 +11,12 @@ from torchvision.utils import make_grid
 import numpy as np
 from tqdm import tqdm
 import argparse
+from train_ebm_cifar10_gan_r3gan_vit_cls_self_att import MaskedAutoencoderViT
 import torch.nn.functional as F
-from ibot_ctrl import utils_ibot as utils
 
 def zero_centered_gradient_penalty(samples, critics):
     grad, = torch.autograd.grad(outputs=critics.sum(), inputs=samples, create_graph=True)
     return grad.square().sum([1, 2, 3])
-
-
-
-
-
-class LayerNorm(nn.Module):
-
-    def __init__(self, normalized_shape, eps=1e-6):
-
-        super().__init__()
-
-        self.weight = nn.Parameter(torch.ones(normalized_shape))
-
-        self.bias = nn.Parameter(torch.zeros(normalized_shape))
-
-        self.eps = eps
-
-        self.normalized_shape = (normalized_shape, )
-
-    
-
-    def forward(self, x):
-
-        u = x.mean(1, keepdim=True)
-
-        s = (x - u).pow(2).mean(1, keepdim=True)
-
-        x = (x - u) / torch.sqrt(s + self.eps)
-
-        return self.weight[:, None, None] * x + self.bias[:, None, None]
-
-
-
-class ConvNeXtBlock(nn.Module):
-
-    def __init__(self, dim, drop_path=0.):
-
-        super().__init__()
-
-        self.dwconv = nn.Conv2d(dim, dim, kernel_size=7, padding=3, groups=dim) # depth-wise conv
-
-        self.norm = LayerNorm(dim)
-
-        self.pwconv1 = nn.Conv2d(dim, 4 * dim, kernel_size=1)
-
-        self.act = nn.GELU()
-
-        self.pwconv2 = nn.Conv2d(4 * dim, dim, kernel_size=1)
-
-        self.drop_path = DropPath(drop_path) if drop_path > 0. else nn.Identity()
-
-
-
-    def forward(self, x):
-
-        input = x
-
-        x = self.dwconv(x)
-
-        x = self.norm(x)
-
-        x = self.pwconv1(x)
-
-        x = self.act(x)
-
-        x = self.pwconv2(x)
-
-        x = input + self.drop_path(x)
-
-        return x
-
-
-
-class ConvNeXtEnergyNet(nn.Module):
-
-    def __init__(self, img_channels=3, hidden_dim=96):
-
-        super().__init__()
-
-        
-
-        # Stem stage: patchify using conv
-
-        self.stem = nn.Sequential(
-
-            nn.Conv2d(img_channels, hidden_dim, kernel_size=4, stride=4),
-
-            LayerNorm(hidden_dim)
-
-        )
-
-        
-
-        # Stage 1
-
-        self.stage1 = nn.Sequential(
-
-            ConvNeXtBlock(hidden_dim),
-
-            ConvNeXtBlock(hidden_dim),
-
-            nn.Conv2d(hidden_dim, hidden_dim * 2, kernel_size=2, stride=2),
-
-            LayerNorm(hidden_dim * 2)
-
-        )
-
-        
-
-        # Stage 2
-
-        self.stage2 = nn.Sequential(
-
-            ConvNeXtBlock(hidden_dim * 2),
-
-            ConvNeXtBlock(hidden_dim * 2),
-
-            nn.Conv2d(hidden_dim * 2, hidden_dim * 4, kernel_size=2, stride=2),
-
-            LayerNorm(hidden_dim * 4)
-
-        )
-
-        
-
-        # Final stage
-
-        self.stage3 = nn.Sequential(
-
-            ConvNeXtBlock(hidden_dim * 4),
-
-            ConvNeXtBlock(hidden_dim * 4),
-
-            nn.AdaptiveAvgPool2d(1),
-
-            nn.Conv2d(hidden_dim * 4, 128, kernel_size=1)
-
-        )
-
-        
-
-        # Optional: add a head for energy output
-
-        self.head = nn.Linear(128, 1)
-
-        
-
-        # Initialize weights
-
-        self.apply(self._init_weights)
-
-    
-
-    def _init_weights(self, m):
-
-        if isinstance(m, (nn.Conv2d, nn.Linear)):
-
-            nn.init.trunc_normal_(m.weight, std=.02)
-
-            if m.bias is not None:
-
-                nn.init.constant_(m.bias, 0)
-
-        elif isinstance(m, LayerNorm):
-
-            nn.init.constant_(m.bias, 0)
-
-            nn.init.constant_(m.weight, 1.0)
-
-    
-    def forward_encoder(self, x):
-        x = self.stem(x)
-
-        x = self.stage1(x)
-
-        x = self.stage2(x)
-
-        x = self.stage3(x)
-
-        x = x.squeeze()
-        return x
-
-
-    def forward(self, x):
-
-        x = self.forward_encoder(x)
-
-        
-
-        # Optional: use head for energy output
-
-        x = self.head(x)
-
-        return x
-    
 
 class EnergyNet(nn.Module):
     def __init__(self, img_channels=3, hidden_dim=64):
@@ -241,8 +46,7 @@ class EnergyNet(nn.Module):
             # Final conv to scalar energy: [B, 512, 2, 2] -> [B, 1, 1, 1]
             nn.Conv2d(hidden_dim * 8, 128, 2, 1, 0)
         )
-        
-        
+
         self.head = nn.Linear(128, 1)
         
         # Initialize weights properly
@@ -307,16 +111,44 @@ def R(Z,eps=0.5):
     return out.mean()
 
 
+def R_nonorm(Z,eps=0.5):
+    c = Z.shape[-1]
+    b = Z.shape[-2]
+    
+    Z = Z
+    cov = Z.T @ Z
+    I = torch.eye(cov.size(-1)).to(Z.device)
+    alpha = c/(b*eps)
+    
+    cov = alpha * cov +  I
+
+    out = 0.5*torch.logdet(cov)
+    return out.mean()
+
 def mcr(Z1,Z2):
     return R(torch.cat([Z1,Z2],dim=0))-0.5*R(Z1)-0.5*R(Z2)
 
 
-# def dino_loss(Z1,Z2,scale_Z1=1e-2):
-#     return -R(Z1).mean()*scale_Z1 + (1 - F.cosine_similarity(Z1,Z2,dim=-1)).mean()
 
+# Add SimSiam loss function
+def simsiam_loss(p1, p2, h1, h2):
+
+    loss_tcr = -R(p1).mean()
+    loss_tcr *=1e-2
+
+    # Negative cosine similarity
+    loss_cos = (F.cosine_similarity(h1, p2.detach(), dim=-1).mean() + 
+             F.cosine_similarity(h2, p1.detach(), dim=-1).mean()) * 0.5
+    
+    loss_cos = 1-loss_cos
+
+    return loss_cos,loss_tcr
 
 def tcr_loss(Z1,Z2):
-    return R(Z1).mean() - R(Z2).mean()
+    Z1 = F.normalize(Z1,p=2,dim=-1)
+    Z2 = F.normalize(Z2,p=2,dim=-1)
+    Z = (Z1+Z2)/2
+    return R_nonorm(Z)
 
 
 class TCREnergyNet(nn.Module):
@@ -460,36 +292,9 @@ class Reshape(nn.Module):
 class Generator(nn.Module):
     def __init__(self, latent_dim=100, hidden_dim=64):
         super().__init__()
-
-        self.net_encoder = nn.Sequential(
-            # Initial conv: [B, 3, 32, 32] -> [B, 64, 16, 16]
-            nn.Conv2d(3, hidden_dim, 4, 2, 1),
-            # nn.GroupNorm(8, hidden_dim),  # Add normalization
-            nn.LeakyReLU(0.2),
-            
-            # [B, 64, 16, 16] -> [B, 128, 8, 8]
-            nn.Conv2d(hidden_dim, hidden_dim * 2, 4, 2, 1),
-            # nn.GroupNorm(8, hidden_dim * 2),  # Add normalization
-            nn.LeakyReLU(0.2),
-            
-            # [B, 128, 8, 8] -> [B, 256, 4, 4]
-            nn.Conv2d(hidden_dim * 2, hidden_dim * 4, 4, 2, 1),
-            # nn.GroupNorm(8, hidden_dim * 4),  # Add normalization
-            nn.LeakyReLU(0.2),
-            
-            # [B, 256, 4, 4] -> [B, 512, 2, 2]
-            nn.Conv2d(hidden_dim * 4, hidden_dim * 8, 4, 2, 1),
-            # nn.GroupNorm(8, hidden_dim * 8),  # Add normalization
-            nn.LeakyReLU(0.2),
-            
-            # Final conv to scalar energy: [B, 512, 2, 2] -> [B, 1, 1, 1]
-            nn.Conv2d(hidden_dim * 8, 128, 2, 1, 0)
-        )
-
-
-        self.net_decoder = nn.Sequential(
+        self.net = nn.Sequential(
             # Initial projection
-            nn.Linear(latent_dim, hidden_dim * 8 * 4 * 4),
+            nn.Linear(latent_dim+128, hidden_dim * 8 * 4 * 4),
             nn.LeakyReLU(0.2),
             
             # Reshape layer instead of lambda
@@ -523,68 +328,14 @@ class Generator(nn.Module):
             if m.bias is not None:
                 nn.init.constant_(m.bias, 0)
                 
-    def forward(self, x):
-        z = self.net_encoder(x).squeeze()
-        return self.net_decoder(z)
+    def forward(self, z,c=None):
+        if c is not None:
+            z = torch.cat([z,c],dim=-1)
 
-
-
-class ConvNextGenerator(nn.Module):
-    def __init__(self, latent_dim=128, hidden_dim=96):
-        super().__init__()
-        self.encoder = ConvNeXtEnergyNet(img_channels=3, hidden_dim=hidden_dim)
-        self.decoder = nn.Sequential(
-            # Initial projection
-            nn.Linear(latent_dim, hidden_dim * 8 * 4 * 4),
-            nn.LeakyReLU(0.2),
-            
-            # Reshape layer instead of lambda
-            Reshape((hidden_dim * 8, 4, 4)),
-            
-            # [4x4] -> [8x8]
-            nn.ConvTranspose2d(hidden_dim * 8, hidden_dim * 4, 4, 2, 1),
-            nn.BatchNorm2d(hidden_dim * 4),
-            nn.LeakyReLU(0.2),
-            
-            # [8x8] -> [16x16]
-            nn.ConvTranspose2d(hidden_dim * 4, hidden_dim * 2, 4, 2, 1),
-            nn.BatchNorm2d(hidden_dim * 2),
-            nn.LeakyReLU(0.2),
-            
-            # [16x16] -> [32x32]
-            nn.ConvTranspose2d(hidden_dim * 2, hidden_dim, 4, 2, 1),
-            nn.BatchNorm2d(hidden_dim),
-            nn.LeakyReLU(0.2),
-            
-            # Final layer
-            nn.ConvTranspose2d(hidden_dim, 3, 3, 1, 1),
-            nn.Tanh()
-        )
-        
-        self.apply(self._init_weights)
-
-    def _init_weights(self, m):
-        if isinstance(m, (nn.Conv2d, nn.ConvTranspose2d, nn.Linear)):
-            nn.init.orthogonal_(m.weight)
-            if m.bias is not None:
-                nn.init.constant_(m.bias, 0)
-
-    def forward(self, x):
-        z = self.encoder.forward_encoder(x).squeeze()
-
-        return self.decoder(z)
+        return self.net(z)
 
 # Modify training function
 def train_ebm_gan(args):
-
-    lr_schedule = utils.cosine_scheduler(
-        args.lr,  # linear scaling rule
-        args.min_lr,
-        args.epochs, len(trainloader),
-        warmup_epochs=args.warmup_epochs,
-    )
-
-
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
 
@@ -599,8 +350,8 @@ def train_ebm_gan(args):
     trainset = torchvision.datasets.CIFAR10(root=args.data_path, train=True,
                                           download=True, transform=transform)
     
-    if args.cls != -1:
-        # Filter the dataset to only include class 1
+    # Filter the dataset to only include class 1
+    if args.cls!=-1:
         class_1_indices = [i for i, label in enumerate(trainset.targets) if label == args.cls]
         trainset.data = trainset.data[class_1_indices]
         trainset.targets = [trainset.targets[i] for i in class_1_indices]
@@ -609,21 +360,35 @@ def train_ebm_gan(args):
     trainloader = DataLoader(trainset, batch_size=args.batch_size,
                            shuffle=True, num_workers=args.num_workers)
 
-    # # # Initialize models
-    # generator = Generator(latent_dim=args.latent_dim, hidden_dim=64).to(device)
-    # # discriminator = ResNetEnergyNet(img_channels=3, hidden_dim=64).to(device)
+    generator = MaskedAutoencoderViT(
+        img_size=32, 
+        patch_size=4, 
+        in_chans=3, 
+        embed_dim=192, 
+        decoder_embed_dim=args.latent_dim,
+        depth=6, 
+        num_heads=3
+        ).to(device)
+    # 
+    # discriminator = ResNetEnergyNet(img_channels=3, hidden_dim=64).to(device)
     # discriminator = EnergyNet(img_channels=3, hidden_dim=64).to(device)
-    
-    generator = ConvNextGenerator(latent_dim=args.latent_dim, hidden_dim=96).to(device)
-    discriminator = ConvNeXtEnergyNet(img_channels=3, hidden_dim=64).to(device) 
-    
+    discriminator = MaskedAutoencoderViT(
+        img_size=32, 
+        patch_size=4, 
+        in_chans=3, 
+        embed_dim=192, 
+        decoder_embed_dim=args.latent_dim,
+        depth=6, 
+        num_heads=3
+        ).to(device)
+        
     # Optimizers
-    g_optimizer = torch.optim.Adam(
+    g_optimizer = torch.optim.AdamW(
         generator.parameters(), 
         lr=args.g_lr, 
         betas=(args.g_beta1, args.g_beta2)
     )
-    d_optimizer = torch.optim.Adam(
+    d_optimizer = torch.optim.AdamW(
         discriminator.parameters(), 
         lr=args.d_lr, 
         betas=(0.5, 0.999)
@@ -671,17 +436,19 @@ def train_ebm_gan(args):
                 d_optimizer.zero_grad()
                 
                 # Generate fake samples
-                # z = torch.randn(batch_size, args.latent_dim, device=device)
-                
-                # z = discriminator.net(real_samples).squeeze()
-                
-                fake_samples = generator(real_samples).detach().requires_grad_(True)
-                
-                real_samples = real_samples.detach().requires_grad_(True)
+                z = torch.randn(batch_size, args.latent_dim, device=device)
+                c_real = discriminator.forward_feature(real_samples.detach()).squeeze()
 
+                real_samples = real_samples.detach().requires_grad_(True)
+                fake_samples = generator.generate(z,c_real.detach()).detach().requires_grad_(True)
+                
+                c_fake = discriminator.forward_feature(fake_samples.detach()).squeeze()
+
+                loss_cos,loss_tcr = simsiam_loss(c_real,c_fake,c_real,c_fake)
+                cl_loss = loss_tcr+loss_cos
                 # Compute energies
-                real_energy = discriminator(real_samples)
-                fake_energy = discriminator(fake_samples)
+                real_energy = discriminator.discriminate(real_samples)
+                fake_energy = discriminator.discriminate(fake_samples)
                 
                 realistic_logits = real_energy - fake_energy
                 d_loss = F.softplus(-realistic_logits)
@@ -691,7 +458,7 @@ def train_ebm_gan(args):
                 r1 = zero_centered_gradient_penalty(real_samples, real_energy)
                 r2 = zero_centered_gradient_penalty(fake_samples, fake_energy)
 
-                d_loss = d_loss + args.gp_weight/2 * (r1 + r2)
+                d_loss = d_loss + args.gp_weight/2 * (r1 + r2)+cl_loss 
                 d_loss = d_loss.mean()
 
                 # # Add gradient penalty
@@ -705,13 +472,12 @@ def train_ebm_gan(args):
             g_optimizer.zero_grad()
             
             # Generate new fake samples
-            # z = torch.randn(batch_size, args.latent_dim, device=device)
-            
-            # z = discriminator.net(real_samples).squeeze()
-            
-            fake_samples = generator(real_samples)
-            fake_energy = discriminator(fake_samples)
-            real_energy = discriminator(real_samples)
+            z = torch.randn(batch_size, args.latent_dim, device=device)
+            c_real = discriminator.forward_feature(real_samples.detach()).squeeze()
+
+            fake_samples = generator.generate(z,c_real.detach())
+            fake_energy = discriminator.discriminate(fake_samples)
+            real_energy = discriminator.discriminate(real_samples)
 
             realistic_logits = fake_energy - real_energy
             g_loss = F.softplus(-realistic_logits)
@@ -728,6 +494,9 @@ def train_ebm_gan(args):
                 current_d_lr = d_optimizer.param_groups[0]['lr']
                 print(f'Epoch [{epoch}/{args.epochs}], Step [{i}/{len(trainloader)}], '
                       f'D_loss: {d_loss.item():.4f}, G_loss: {g_loss.item():.4f}, '
+                      f'cl_loss: {cl_loss.item():.4f}, '
+                      f'tcr_loss: {loss_tcr.item():.4f}, '
+                      f'cos_loss: {loss_cos.item():.4f}, '
                       f'r1: {r1.mean().item():.4f}, r2: {r2.mean().item():.4f}, '
                       f'Real Energy: {real_energy.mean().item():.4f}, '
                       f'Fake Energy: {fake_energy.mean().item():.4f}, '
@@ -737,7 +506,9 @@ def train_ebm_gan(args):
         # Step the schedulers at the end of each epoch
         g_scheduler.step()
         d_scheduler.step()
+        
         real_samples = next(iter(trainloader))[0].to(device)
+
         # Save samples and model checkpoints
         if epoch % args.save_freq == 0:
             save_gan_samples(generator, discriminator, epoch, args.output_dir, device,real_samples=real_samples)
@@ -754,14 +525,14 @@ def train_ebm_gan(args):
 def save_gan_samples(generator, discriminator, epoch, output_dir, device, n_samples=36,real_samples=None):
     generator.eval()
     discriminator.eval()
-    
+    real_samples = real_samples[:n_samples]
+    batch_size = real_samples.size(0)
     with torch.no_grad():
-        # z = torch.randn(n_samples, args.latent_dim, device=device)
-        
-        # z = discriminator.net(real_samples[:n_samples]).squeeze()
-        # fake_samples = generator(z)
-        fake_samples = generator(real_samples[:n_samples])
+        z = torch.randn(batch_size, args.latent_dim, device=device)
+        c_real = discriminator.forward_feature(real_samples.detach()).squeeze()
 
+        fake_samples = generator.generate(z,c_real.detach())
+        
         # Changed 'range' to 'value_range'
         grid = make_grid(fake_samples, nrow=6, normalize=True, value_range=(-1, 1))
         plt.figure(figsize=(10, 10))
@@ -769,11 +540,16 @@ def save_gan_samples(generator, discriminator, epoch, output_dir, device, n_samp
         plt.axis('off')
         plt.savefig(os.path.join(output_dir, f'gan_samples_epoch_{epoch}.png'))
 
-        grid = make_grid(real_samples[:n_samples], nrow=6, normalize=True, value_range=(-1, 1))
+
+        # Changed 'range' to 'value_range'
+        grid = make_grid(real_samples, nrow=6, normalize=True, value_range=(-1, 1))
         plt.figure(figsize=(10, 10))
         plt.imshow(grid.cpu().permute(1, 2, 0))
         plt.axis('off')
-        plt.savefig(os.path.join(output_dir, f'gan_samples_epoch_{epoch}_real.png'))
+        plt.savefig(os.path.join(output_dir, f'gan_samples_real_epoch_{epoch}.png'))
+
+
+
         plt.close()
 
 def compute_gradient_penalty(discriminator, real_samples, fake_samples, device):
@@ -799,7 +575,7 @@ def get_args_parser():
     parser = argparse.ArgumentParser('EBM-GAN training for CIFAR-10')
     
     # Add GAN-specific parameters
-    parser.add_argument('--latent_dim', default=128, type=int)
+    parser.add_argument('--latent_dim', default=192, type=int)
     parser.add_argument('--g_lr', default=1e-4, type=float)
     parser.add_argument('--d_lr', default=1e-4, type=float)
     parser.add_argument('--n_critic', default=1, type=int,
@@ -810,22 +586,24 @@ def get_args_parser():
     # Modify learning rates
     parser.add_argument('--g_beta1', default=0.5, type=float,
                         help='Beta1 for generator optimizer')
-    parser.add_argument('--g_beta2', default=0.9, type=float,
+    parser.add_argument('--g_beta2', default=0.999, type=float,
                         help='Beta2 for generator optimizer')
+    
+    parser.add_argument('--cls', default=-1, type=int,
+                        help='Class to train on')
     
     # Existing parameters
     parser.add_argument('--epochs', default=1200, type=int)
     parser.add_argument('--batch_size', default=128, type=int)
     parser.add_argument('--lr', default=1e-4, type=float)
-
-    parser.add_argument('--data_path', default='C:/dataset', type=str)
-    parser.add_argument('--output_dir', default='F:/output/cifar10-ebm-gan-r3gan-ctrl-vit')
+    
+    parser.add_argument('--data_path', default='/home/qianqian/repo/cnn_cl/data', type=str)
+    parser.add_argument('--output_dir', default='./output/cifar10-ebm-gan-r3gan-ctrl-vit')
     parser.add_argument('--num_workers', default=4, type=int)
     parser.add_argument('--use_amp', action='store_true')
     parser.add_argument('--log_freq', default=100, type=int)
     parser.add_argument('--save_freq', default=1, type=int)
-    parser.add_argument('--cls', default=-1, type=int)
-
+    
     # Add learning rate scheduling parameters
     parser.add_argument('--min_lr', default=1e-6, type=float,
                         help='Minimum learning rate for cosine annealing')
