@@ -312,7 +312,7 @@ def train_ebm_gan(args):
 
     # Load dataset using ImageFolder
     trainset = torchvision.datasets.ImageFolder(
-        root=os.path.join(args.data_path, 'train'),
+        root=os.path.join(args.data_path, ''),
         transform=transform
     )
     
