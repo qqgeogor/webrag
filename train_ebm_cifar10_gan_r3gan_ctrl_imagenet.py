@@ -303,9 +303,9 @@ def train_ebm_gan(args):
 
     # Modified data preprocessing for configurable image size
     transform = transforms.Compose([
-        transforms.RandomHorizontalFlip(),
         transforms.Resize(args.img_size),
         transforms.CenterCrop(args.img_size),
+        transforms.RandomHorizontalFlip(),
         transforms.ToTensor(),
         transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
     ])

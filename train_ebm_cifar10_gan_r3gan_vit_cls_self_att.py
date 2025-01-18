@@ -256,6 +256,7 @@ class MaskedAutoencoderViT(nn.Module):
             
         #     x = x + self.decoder_pos_embed
         # else:
+        contexts = F.normalize(contexts,p=2,dim=-1)
 
         contexts = self.decoder_embed(contexts)
         x = torch.cat([contexts,x],dim=1)
@@ -723,6 +724,19 @@ class Generator(nn.Module):
     def forward(self, z):
         return self.net(z)
 
+
+def R_nonorm(Z,eps=0.5):
+    c = Z.shape[-1]
+    b = Z.shape[-2]
+    
+    cov = Z.T @ Z
+    I = torch.eye(cov.size(-1)).to(Z.device)
+    alpha = c/(b*eps)
+    
+    cov = alpha * cov +  I
+
+    out = 0.5*torch.logdet(cov)
+    return out.mean()
 
 def simsiam_loss(p1, p2,scale=1e-2):
 
