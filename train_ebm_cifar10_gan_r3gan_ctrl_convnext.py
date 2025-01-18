@@ -270,21 +270,21 @@ class ResBlock(nn.Module):
     def __init__(self, in_channels, out_channels, stride=1):
         super().__init__()
         self.conv1 = nn.Conv2d(in_channels, out_channels, 3, stride, 1)
-        self.gn1 = nn.GroupNorm(8, out_channels)
+        self.bn1 = nn.BatchNorm2d(out_channels)
         self.conv2 = nn.Conv2d(out_channels, out_channels, 3, 1, 1)
-        self.gn2 = nn.GroupNorm(8, out_channels)
+        self.bn2 = nn.BatchNorm2d(out_channels)
         
         # Shortcut connection
         self.shortcut = nn.Sequential()
         if stride != 1 or in_channels != out_channels:
             self.shortcut = nn.Sequential(
                 nn.Conv2d(in_channels, out_channels, 1, stride),
-                nn.GroupNorm(8, out_channels)
+                nn.BatchNorm2d(out_channels)
             )
     
     def forward(self, x):
-        out = F.leaky_relu(self.gn1(self.conv1(x)), 0.2)
-        out = self.gn2(self.conv2(out))
+        out = F.leaky_relu(self.bn1(self.conv1(x)), 0.2)
+        out = self.bn2(self.conv2(out))
         out += self.shortcut(x)
         out = F.leaky_relu(out, 0.2)
         return out

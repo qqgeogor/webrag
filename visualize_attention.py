@@ -181,10 +181,14 @@ def visualize_attention(args):
         patch_size=4, 
         in_chans=3,
         embed_dim=192,
-        decoder_embed_dim=192,
+        decoder_embed_dim=96,
         depth=6,
         num_heads=3
     ).to(device)
+
+    # model = MaskedAutoencoderViT(img_size=32, patch_size=4, in_chans=3,
+    #     embed_dim=192, depth=6, num_heads=3,
+    #     mlp_ratio=4, ).to(device)
 
     # Load checkpoint
     if os.path.isfile(args.checkpoint_path):

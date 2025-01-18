@@ -11,7 +11,6 @@ from torchvision.utils import make_grid
 import numpy as np
 from tqdm import tqdm
 import argparse
-from train_ebm_cifar10_gan_r3gan_vit_cls_self_att import MaskedAutoencoderViT
 import torch.nn.functional as F
 
 def zero_centered_gradient_penalty(samples, critics):
@@ -19,35 +18,37 @@ def zero_centered_gradient_penalty(samples, critics):
     return grad.square().sum([1, 2, 3])
 
 class EnergyNet(nn.Module):
-    def __init__(self, img_channels=3, hidden_dim=64):
+    def __init__(self, img_channels=3, hidden_dim=64, img_size=32):
         super().__init__()
         
-        self.net = nn.Sequential(
-            # Initial conv: [B, 3, 32, 32] -> [B, 64, 16, 16]
+        # Calculate number of downsampling steps needed
+        self.n_downsample = int(np.log2(img_size) - 2)  # Final feature map should be 4x4
+        
+        layers = [
+            # Initial conv: [B, 3, img_size, img_size] -> [B, 64, img_size/2, img_size/2]
             nn.Conv2d(img_channels, hidden_dim, 4, 2, 1),
             nn.BatchNorm2d(hidden_dim),
-            nn.ReLU(inplace=True),
-            
-            # [B, 64, 16, 16] -> [B, 128, 8, 8]
-            nn.Conv2d(hidden_dim, hidden_dim * 2, 4, 2, 1),
-            nn.BatchNorm2d(hidden_dim * 2),
-            nn.ReLU(inplace=True),
-            
-            # [B, 128, 8, 8] -> [B, 256, 4, 4]
-            nn.Conv2d(hidden_dim * 2, hidden_dim * 4, 4, 2, 1),
-            nn.BatchNorm2d(hidden_dim * 4),
-            nn.ReLU(inplace=True),
-            
-            # [B, 256, 4, 4] -> [B, 512, 2, 2]
-            nn.Conv2d(hidden_dim * 4, hidden_dim * 8, 4, 2, 1),
-            nn.BatchNorm2d(hidden_dim * 8),
-            nn.ReLU(inplace=True),
-            
-            # Final conv: [B, 512, 2, 2] -> [B, 512, 1, 1]
-            nn.Conv2d(hidden_dim * 8, 192, 2, 1, 0)
-        )
-
-        self.head = nn.Linear(192, 1)
+            nn.LeakyReLU(0.2),
+            ResBlock(hidden_dim,hidden_dim,1)
+        ]
+        
+        # Add downsampling layers
+        current_dim = hidden_dim
+        for i in range(self.n_downsample - 1):
+            next_dim = min(current_dim * 2, 512)
+            layers.extend([
+                nn.Conv2d(current_dim, next_dim, 4, 2, 1),
+                nn.BatchNorm2d(next_dim),
+                nn.LeakyReLU(0.2),
+                ResBlock(next_dim,next_dim,1)
+            ])
+            current_dim = next_dim
+        
+        # Final conv to scalar energy: [B, current_dim, 4, 4] -> [B, 128, 1, 1]
+        layers.append(nn.Conv2d(current_dim, 128, 4, 1, 0))
+        
+        self.net = nn.Sequential(*layers)
+        self.head = nn.Linear(128, 1)
         
         # Initialize weights properly
         self.apply(self._init_weights)
@@ -58,12 +59,6 @@ class EnergyNet(nn.Module):
             if m.bias is not None:
                 nn.init.constant_(m.bias.data, 0)
     
-    def forward_feature(self, x):
-        return self.net(x).squeeze()
-
-    def discriminate(self, x):
-        return self(x)
-
     def forward(self, x):
         logits = self.net(x).squeeze()
         logits = self.head(logits)
@@ -74,30 +69,6 @@ class EnergyNet(nn.Module):
         # logits = logits# + reg_term
         #logits = -F.logsigmoid(logits)
         return logits
-
-
-class ResBlock(nn.Module):
-    def __init__(self, in_channels, out_channels, stride=1):
-        super().__init__()
-        self.conv1 = nn.Conv2d(in_channels, out_channels, 3, stride, 1)
-        self.gn1 = nn.GroupNorm(8, out_channels)
-        self.conv2 = nn.Conv2d(out_channels, out_channels, 3, 1, 1)
-        self.gn2 = nn.GroupNorm(8, out_channels)
-        
-        # Shortcut connection
-        self.shortcut = nn.Sequential()
-        if stride != 1 or in_channels != out_channels:
-            self.shortcut = nn.Sequential(
-                nn.Conv2d(in_channels, out_channels, 1, stride),
-                nn.GroupNorm(8, out_channels)
-            )
-    
-    def forward(self, x):
-        out = F.leaky_relu(self.gn1(self.conv1(x)), 0.2)
-        out = self.gn2(self.conv2(out))
-        out += self.shortcut(x)
-        out = F.leaky_relu(out, 0.2)
-        return out
 
 
 
@@ -157,51 +128,6 @@ def tcr_loss(Z1,Z2):
     return R_nonorm(Z)
 
 
-class TCREnergyNet(nn.Module):
-    def __init__(self, img_channels=3, hidden_dim=64):
-        super().__init__()
-        
-        # Initial conv layer
-        self.initial = nn.Sequential(
-            nn.Conv2d(img_channels, hidden_dim, 3, 1, 1),
-            nn.GroupNorm(8, hidden_dim),
-            nn.LeakyReLU(0.2)
-        )
-        
-        # ResNet blocks with downsampling
-        self.layer1 = ResBlock(hidden_dim, hidden_dim * 2, stride=2)
-        self.layer2 = ResBlock(hidden_dim * 2, hidden_dim * 4, stride=2)
-        self.layer3 = ResBlock(hidden_dim * 4, hidden_dim * 8, stride=2)
-        self.layer4 = ResBlock(hidden_dim * 8, hidden_dim * 8, stride=2)
-        
-        # Final energy output
-        self.energy_head = nn.Sequential(
-            nn.Conv2d(hidden_dim * 8, hidden_dim * 4, 2, 1, 0),
-            nn.GroupNorm(8, hidden_dim * 4),
-            nn.LeakyReLU(0.2),
-            nn.Conv2d(hidden_dim * 4, hidden_dim * 4, 1, 1, 0)
-        )
-        
-        # Initialize weights
-        self.apply(self._init_weights)
-    
-    def _init_weights(self, m):
-        if isinstance(m, nn.Conv2d):
-            nn.init.orthogonal_(m.weight.data)
-            if m.bias is not None:
-                nn.init.constant_(m.bias.data, 0)
-    
-    def forward(self, x):
-        x = self.initial(x)
-        x = self.layer1(x)
-        x = self.layer2(x)
-        x = self.layer3(x)
-        x = self.layer4(x)
-        Z = self.energy_head(x).squeeze()
-        Z = R(Z)
-        return Z
-
-
 class ResNetEnergyNet(nn.Module):
     def __init__(self, img_channels=3, hidden_dim=64):
         super().__init__()
@@ -222,7 +148,7 @@ class ResNetEnergyNet(nn.Module):
         # Final energy output
         self.energy_head = nn.Sequential(
             nn.Conv2d(hidden_dim * 8, hidden_dim * 4, 2, 1, 0),
-            nn.GroupNorm(8, hidden_dim * 4),
+            nn.BatchNorm2d(hidden_dim * 4),
             nn.LeakyReLU(0.2),
             nn.Conv2d(hidden_dim * 4, 1, 1, 1, 0)
         )
@@ -294,38 +220,67 @@ class Reshape(nn.Module):
     def forward(self, x):
         return x.view(x.size(0), *self.shape)
 
+class ResBlock(nn.Module):
+    def __init__(self, in_channels, out_channels, stride=1):
+        super().__init__()
+        self.conv1 = nn.Conv2d(in_channels, out_channels, 3, stride, 1)
+        self.bn1 = nn.BatchNorm2d(out_channels)
+        self.conv2 = nn.Conv2d(out_channels, out_channels, 3, 1, 1)
+        self.bn2 = nn.BatchNorm2d(out_channels)
+        
+        # Shortcut connection
+        self.shortcut = nn.Sequential()
+        if stride != 1 or in_channels != out_channels:
+            self.shortcut = nn.Sequential(
+                nn.Conv2d(in_channels, out_channels, 1, stride),
+                nn.BatchNorm2d(out_channels)
+            )
+    
+    def forward(self, x):
+        out = F.leaky_relu(self.bn1(self.conv1(x)), 0.2)
+        out = self.bn2(self.conv2(out))
+        out += self.shortcut(x)
+        out = F.leaky_relu(out, 0.2)
+        return out
+
+
+
+
 # Add Generator class
 class Generator(nn.Module):
-    def __init__(self, latent_dim=100, hidden_dim=64):
+    def __init__(self, latent_dim=100, hidden_dim=64, img_size=32):
         super().__init__()
-        self.net = nn.Sequential(
-            # Initial projection
+        
+        # Calculate number of upsampling steps needed
+        self.n_upsample = int(np.log2(img_size) - 2)  # Start from 4x4
+        
+        # Initial projection and reshape
+        self.project = nn.Sequential(
             nn.Linear(latent_dim+128, hidden_dim * 8 * 4 * 4),
             nn.LeakyReLU(0.2),
-            
-            # Reshape layer instead of lambda
-            Reshape((hidden_dim * 8, 4, 4)),
-            
-            # [4x4] -> [8x8]
-            nn.ConvTranspose2d(hidden_dim * 8, hidden_dim * 4, 4, 2, 1),
-            nn.BatchNorm2d(hidden_dim * 4),
-            nn.LeakyReLU(0.2),
-            
-            # [8x8] -> [16x16]
-            nn.ConvTranspose2d(hidden_dim * 4, hidden_dim * 2, 4, 2, 1),
-            nn.BatchNorm2d(hidden_dim * 2),
-            nn.LeakyReLU(0.2),
-            
-            # [16x16] -> [32x32]
-            nn.ConvTranspose2d(hidden_dim * 2, hidden_dim, 4, 2, 1),
-            nn.BatchNorm2d(hidden_dim),
-            nn.LeakyReLU(0.2),
-            
-            # Final layer
-            nn.ConvTranspose2d(hidden_dim, 3, 3, 1, 1),
-            nn.Tanh()
         )
         
+        # Build upsampling layers
+        layers = []
+        current_dim = hidden_dim * 8
+        
+        for i in range(self.n_upsample):
+            next_dim = current_dim // 2
+            layers.extend([
+                nn.ConvTranspose2d(current_dim, next_dim, 4, 2, 1),
+                nn.BatchNorm2d(next_dim),
+                nn.LeakyReLU(0.2),
+                ResBlock(next_dim,next_dim,1)
+            ])
+            current_dim = next_dim
+        
+        # Final layer
+        layers.extend([
+            nn.ConvTranspose2d(current_dim, 3, 3, 1, 1),
+            nn.Tanh()
+        ])
+        
+        self.net = nn.Sequential(*layers)
         self.apply(self._init_weights)
     
     def _init_weights(self, m):
@@ -334,55 +289,47 @@ class Generator(nn.Module):
             if m.bias is not None:
                 nn.init.constant_(m.bias, 0)
                 
-    def forward(self, z,c=None):
+    def forward(self, z, c=None):
         if c is not None:
-            z = torch.cat([z,c],dim=-1)
-
-        return self.net(z)
+            z = torch.cat([z, c], dim=-1)
+        x = self.project(z)
+        x = x.view(x.size(0), -1, 4, 4)
+        return self.net(x)
 
 # Modify training function
 def train_ebm_gan(args):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
 
-    # Data preprocessing
+    # Modified data preprocessing for configurable image size
     transform = transforms.Compose([
-        transforms.RandomResizedCrop(args.img_size),  # Resize to 224x224 for ImageNet
         transforms.RandomHorizontalFlip(),
+        transforms.Resize(args.img_size),
+        transforms.CenterCrop(args.img_size),
         transforms.ToTensor(),
-        transforms.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225))  # ImageNet normalization
+        transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
     ])
 
-    # Load ImageNet using ImageFolder
-    trainset = torchvision.datasets.ImageFolder(root=args.data_path, transform=transform)
+    # Load dataset using ImageFolder
+    trainset = torchvision.datasets.ImageFolder(
+        root=os.path.join(args.data_path, 'train'),
+        transform=transform
+    )
     
-    trainloader = DataLoader(trainset, batch_size=args.batch_size,
-                             shuffle=True, num_workers=args.num_workers)
+    # Filter the dataset to only include class 1
+    if args.cls!=-1:
+        class_1_indices = [i for i, label in enumerate(trainset.targets) if label == args.cls]
+        trainset.data = trainset.data[class_1_indices]
+        trainset.targets = [trainset.targets[i] for i in class_1_indices]
+    
 
-    generator = MaskedAutoencoderViT(
-        img_size=args.img_size, 
-        patch_size=args.patch_size, 
-        in_chans=args.in_chans, 
-        embed_dim=args.embed_dim, 
-        decoder_embed_dim=args.decoder_embed_dim,
-        depth=0, 
-        decoder_depth=args.decoder_depth,
-        num_heads=args.num_heads
-    ).to(device)
-    # 
-    # discriminator = ResNetEnergyNet(img_channels=3, hidden_dim=64).to(device)
-    # discriminator = EnergyNet(img_channels=3, hidden_dim=64).to(device)
-    discriminator = MaskedAutoencoderViT(
-        img_size=args.img_size, 
-        patch_size=args.patch_size, 
-        in_chans=args.in_chans, 
-        embed_dim=args.embed_dim, 
-        decoder_embed_dim=args.decoder_embed_dim,
-        depth=args.encoder_depth,
-        decoder_depth = 0, 
-        num_heads=args.num_heads
-    ).to(device)
-        
+    trainloader = DataLoader(trainset, batch_size=args.batch_size,
+                           shuffle=True, num_workers=args.num_workers)
+
+    # Initialize models with configurable image size
+    generator = Generator(latent_dim=args.latent_dim, hidden_dim=64, img_size=args.img_size).to(device)
+    discriminator = EnergyNet(img_channels=3, hidden_dim=64, img_size=args.img_size).to(device)
+    
     # Optimizers
     g_optimizer = torch.optim.AdamW(
         generator.parameters(), 
@@ -414,8 +361,8 @@ def train_ebm_gan(args):
         if os.path.isfile(checkpoint_path):
             print(f"Loading checkpoint from {checkpoint_path}")
             checkpoint = torch.load(checkpoint_path)
-            generator.load_state_dict(checkpoint['generator_state_dict'],strict=False)
-            discriminator.load_state_dict(checkpoint['discriminator_state_dict'],strict=False)
+            generator.load_state_dict(checkpoint['generator_state_dict'])
+            discriminator.load_state_dict(checkpoint['discriminator_state_dict'])
             g_optimizer.load_state_dict(checkpoint['g_optimizer_state_dict'])
             d_optimizer.load_state_dict(checkpoint['d_optimizer_state_dict'])
             g_scheduler.load_state_dict(checkpoint['g_scheduler_state_dict'])
@@ -437,19 +384,19 @@ def train_ebm_gan(args):
                 d_optimizer.zero_grad()
                 
                 # Generate fake samples
-                z = torch.randn(batch_size, args.embed_dim, device=device)
-                c_real = discriminator.forward_feature(real_samples.detach()).squeeze()
+                z = torch.randn(batch_size, args.latent_dim, device=device)
+                c_real = discriminator.net(real_samples.detach()).squeeze()
 
                 real_samples = real_samples.detach().requires_grad_(True)
-                fake_samples = generator.generate(z,c_real.detach()).detach().requires_grad_(True)
+                fake_samples = generator(z,c_real.detach()).detach().requires_grad_(True)
                 
-                c_fake = discriminator.forward_feature(fake_samples.detach()).squeeze()
+                c_fake = discriminator.net(fake_samples.detach()).squeeze()
 
                 loss_cos,loss_tcr = simsiam_loss(c_real,c_fake,c_real,c_fake)
                 cl_loss = loss_tcr+loss_cos
                 # Compute energies
-                real_energy = discriminator.discriminate(real_samples)
-                fake_energy = discriminator.discriminate(fake_samples)
+                real_energy = discriminator(real_samples)
+                fake_energy = discriminator(fake_samples)
                 
                 realistic_logits = real_energy - fake_energy
                 d_loss = F.softplus(-realistic_logits)
@@ -473,12 +420,12 @@ def train_ebm_gan(args):
             g_optimizer.zero_grad()
             
             # Generate new fake samples
-            z = torch.randn(batch_size, args.embed_dim, device=device)
-            c_real = discriminator.forward_feature(real_samples.detach()).squeeze()
+            z = torch.randn(batch_size, args.latent_dim, device=device)
+            c_real = discriminator.net(real_samples.detach()).squeeze()
 
-            fake_samples = generator.generate(z,c_real.detach())
-            fake_energy = discriminator.discriminate(fake_samples)
-            real_energy = discriminator.discriminate(real_samples)
+            fake_samples = generator(z,c_real.detach())
+            fake_energy = discriminator(fake_samples)
+            real_energy = discriminator(real_samples)
 
             realistic_logits = fake_energy - real_energy
             g_loss = F.softplus(-realistic_logits)
@@ -505,8 +452,8 @@ def train_ebm_gan(args):
                       )
         
         # Step the schedulers at the end of each epoch
-        g_scheduler.step(epoch)
-        d_scheduler.step(epoch)
+        g_scheduler.step()
+        d_scheduler.step()
         
         real_samples = next(iter(trainloader))[0].to(device)
 
@@ -529,10 +476,10 @@ def save_gan_samples(generator, discriminator, epoch, output_dir, device, n_samp
     real_samples = real_samples[:n_samples]
     batch_size = real_samples.size(0)
     with torch.no_grad():
-        z = torch.randn(batch_size, args.embed_dim, device=device)
-        c_real = discriminator.forward_feature(real_samples.detach()).squeeze()
+        z = torch.randn(batch_size, args.latent_dim, device=device)
+        c_real = discriminator.net(real_samples.detach()).squeeze()
 
-        fake_samples = generator.generate(z,c_real.detach())
+        fake_samples = generator(z,c_real.detach())
         
         # Changed 'range' to 'value_range'
         grid = make_grid(fake_samples, nrow=6, normalize=True, value_range=(-1, 1))
@@ -573,34 +520,16 @@ def compute_gradient_penalty(discriminator, real_samples, fake_samples, device):
     return gradient_penalty
 
 def get_args_parser():
-    parser = argparse.ArgumentParser('EBM-GAN training for CIFAR-10')
+    parser = argparse.ArgumentParser('EBM-GAN training for custom image datasets')
     
     # Add GAN-specific parameters
-    parser.add_argument('--latent_dim', default=384, type=int)
+    parser.add_argument('--latent_dim', default=128, type=int)
     parser.add_argument('--g_lr', default=1e-4, type=float)
     parser.add_argument('--d_lr', default=1e-4, type=float)
     parser.add_argument('--n_critic', default=1, type=int,
                         help='Number of discriminator updates per generator update')
     parser.add_argument('--gp_weight', default=0.05, type=float,
                         help='Weight of gradient penalty')
-    
-    # Add model architecture parameters
-    parser.add_argument('--img_size', default=224, type=int,
-                        help='Input image size')
-    parser.add_argument('--patch_size', default=16, type=int,
-                        help='Patch size for ViT')
-    parser.add_argument('--in_chans', default=3, type=int,
-                        help='Number of input channels')
-    parser.add_argument('--embed_dim', default=384, type=int,
-                        help='Embedding dimension')
-    parser.add_argument('--decoder_embed_dim', default=384, type=int,
-                        help='Decoder embedding dimension')
-    parser.add_argument('--encoder_depth', default=8, type=int,
-                        help='Depth of encoder')
-    parser.add_argument('--decoder_depth', default=12, type=int,
-                        help='Depth of decoder')
-    parser.add_argument('--num_heads', default=12, type=int,
-                        help='Number of attention heads')
     
     # Modify learning rates
     parser.add_argument('--g_beta1', default=0.5, type=float,
@@ -616,12 +545,13 @@ def get_args_parser():
     parser.add_argument('--batch_size', default=128, type=int)
     parser.add_argument('--lr', default=1e-4, type=float)
     
-    parser.add_argument('--data_path', default='/root/autodl-pub/imagenet100/train', type=str)
-    parser.add_argument('--output_dir', default='/root/autodl-tmp/output/imagenet100-r3gan-ctrl-vit')
-    parser.add_argument('--num_workers', default=16, type=int)
+    parser.add_argument('--data_path', default='./data', type=str,
+                        help='Path to the data directory containing train folder')
+    parser.add_argument('--output_dir', default='./output/imagenet-ebm-gan-r3gan-ctrl')
+    parser.add_argument('--num_workers', default=4, type=int)
     parser.add_argument('--use_amp', action='store_true')
     parser.add_argument('--log_freq', default=100, type=int)
-    parser.add_argument('--save_freq', default=5, type=int)
+    parser.add_argument('--save_freq', default=1, type=int)
     
     # Add learning rate scheduling parameters
     parser.add_argument('--min_lr', default=1e-6, type=float,
@@ -630,6 +560,10 @@ def get_args_parser():
     # Add checkpoint loading parameter
     parser.add_argument('--resume', default=None, type=str,
                         help='Path to checkpoint to resume training from')
+    
+    # Add image size parameter
+    parser.add_argument('--img_size', default=32, type=int,
+                        help='Size of input images (assumes square images)')
     
     return parser
 
