@@ -224,24 +224,32 @@ class ResBlock(nn.Module):
     def __init__(self, in_channels, out_channels, stride=1):
         super().__init__()
         self.conv1 = nn.Conv2d(in_channels, out_channels, 3, stride, 1)
-        self.bn1 = nn.BatchNorm2d(out_channels)
+        # self.bn1 = nn.BatchNorm2d(out_channels)
         self.conv2 = nn.Conv2d(out_channels, out_channels, 3, 1, 1)
-        self.bn2 = nn.BatchNorm2d(out_channels)
+        # self.bn2 = nn.BatchNorm2d(out_channels)
         
         # Shortcut connection
         self.shortcut = nn.Sequential()
         if stride != 1 or in_channels != out_channels:
             self.shortcut = nn.Sequential(
                 nn.Conv2d(in_channels, out_channels, 1, stride),
-                nn.BatchNorm2d(out_channels)
+                # nn.BatchNorm2d(out_channels)
             )
-    
+            
     def forward(self, x):
-        out = F.leaky_relu(self.bn1(self.conv1(x)), 0.2)
-        out = self.bn2(self.conv2(out))
+        out = F.leaky_relu(self.conv1(x), 0.2)
+        out = self.conv2(out)
         out += self.shortcut(x)
         out = F.leaky_relu(out, 0.2)
         return out
+    
+
+    # def forward(self, x):
+    #     out = F.leaky_relu(self.bn1(self.conv1(x)), 0.2)
+    #     out = self.bn2(self.conv2(out))
+    #     out += self.shortcut(x)
+    #     out = F.leaky_relu(out, 0.2)
+    #     return out
 
 
 
@@ -267,7 +275,8 @@ class Generator(nn.Module):
         for i in range(self.n_upsample):
             next_dim = current_dim // 2
             layers.extend([
-                nn.ConvTranspose2d(current_dim, next_dim, 4, 2, 1),
+                nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True),
+                nn.Conv2d(current_dim, next_dim, 3, 1, 1),
                 nn.BatchNorm2d(next_dim),
                 nn.LeakyReLU(0.2),
                 ResBlock(next_dim,next_dim,1)
@@ -365,16 +374,18 @@ def train_ebm_gan(args):
         betas=(0.5, 0.999)
     )
     
-    # Add Cosine Annealing schedulers
-    g_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-        g_optimizer,
-        T_max=args.epochs,
-        eta_min=args.min_lr
+    import utils_ibot as utils
+    g_lr_schedule = utils.cosine_scheduler(
+        args.g_lr,  # linear scaling rule
+        args.min_lr,
+        args.epochs, len(trainloader),
+        warmup_epochs=args.warmup_epochs,
     )
-    d_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-        d_optimizer,
-        T_max=args.epochs,
-        eta_min=args.min_lr
+    d_lr_schedule = utils.cosine_scheduler(
+        args.d_lr,  # linear scaling rule
+        args.min_lr,
+        args.epochs, len(trainloader),
+        warmup_epochs=args.warmup_epochs,
     )
     start_epoch = 0
     
@@ -388,8 +399,6 @@ def train_ebm_gan(args):
             discriminator.load_state_dict(checkpoint['discriminator_state_dict'])
             g_optimizer.load_state_dict(checkpoint['g_optimizer_state_dict'])
             d_optimizer.load_state_dict(checkpoint['d_optimizer_state_dict'])
-            g_scheduler.load_state_dict(checkpoint['g_scheduler_state_dict'])
-            d_scheduler.load_state_dict(checkpoint['d_scheduler_state_dict'])
             start_epoch = checkpoint['epoch'] + 1
             print(f"Resuming from epoch {start_epoch}")
     
@@ -400,6 +409,9 @@ def train_ebm_gan(args):
         
         for i, (real_samples, _) in enumerate(tqdm(trainloader)):
             real_samples,aug_samples = real_samples
+
+            g_optimizer.param_groups[0]['lr'] = g_lr_schedule[epoch*len(trainloader)+i]
+            d_optimizer.param_groups[0]['lr'] = d_lr_schedule[epoch*len(trainloader)+i]
 
             batch_size = real_samples.size(0)
             real_samples = real_samples.to(device)
@@ -479,8 +491,7 @@ def train_ebm_gan(args):
                       )
         
         # Step the schedulers at the end of each epoch
-        g_scheduler.step()
-        d_scheduler.step()
+
         
         real_samples = next(iter(trainloader))[0][0].to(device)
         
@@ -493,8 +504,6 @@ def train_ebm_gan(args):
                 'discriminator_state_dict': discriminator.state_dict(),
                 'g_optimizer_state_dict': g_optimizer.state_dict(),
                 'd_optimizer_state_dict': d_optimizer.state_dict(),
-                'g_scheduler_state_dict': g_scheduler.state_dict(),
-                'd_scheduler_state_dict': d_scheduler.state_dict(),
             }, os.path.join(args.output_dir, f'ebm_gan_checkpoint_{epoch}.pth'))
 
 def save_gan_samples(generator, discriminator, epoch, output_dir, device, n_samples=36,real_samples=None):
@@ -521,7 +530,7 @@ def save_gan_samples(generator, discriminator, epoch, output_dir, device, n_samp
         plt.figure(figsize=(10, 10))
         plt.imshow(grid.cpu().permute(1, 2, 0))
         plt.axis('off')
-        plt.savefig(os.path.join(output_dir, f'gan_samples_real_epoch_{epoch}.png'))
+        plt.savefig(os.path.join(output_dir, f'gan_samples_epoch_{epoch}_real.png'))
 
 
 
@@ -551,13 +560,15 @@ def get_args_parser():
     
     # Add GAN-specific parameters
     parser.add_argument('--latent_dim', default=128, type=int)
-    parser.add_argument('--g_lr', default=1e-4, type=float)
-    parser.add_argument('--d_lr', default=1e-4, type=float)
+    parser.add_argument('--g_lr', default=2e-4, type=float)
+    parser.add_argument('--d_lr', default=2e-4, type=float)
     parser.add_argument('--n_critic', default=1, type=int,
                         help='Number of discriminator updates per generator update')
     parser.add_argument('--gp_weight', default=0.05, type=float,
                         help='Weight of gradient penalty')
     
+    parser.add_argument('--warmup_epochs', default=10, type=int,
+                        help='Number of warmup epochs')
     # Modify learning rates
     parser.add_argument('--g_beta1', default=0.5, type=float,
                         help='Beta1 for generator optimizer')
@@ -572,9 +583,9 @@ def get_args_parser():
     parser.add_argument('--batch_size', default=128, type=int)
     parser.add_argument('--lr', default=1e-4, type=float)
     
-    parser.add_argument('--data_path', default='./data', type=str,
+    parser.add_argument('--data_path', default='c:/dataset/tiny-imagenet/train/', type=str,
                         help='Path to the data directory containing train folder')
-    parser.add_argument('--output_dir', default='./output/imagenet-ebm-gan-r3gan-ctrl')
+    parser.add_argument('--output_dir', default='F:/output/tiny_imagenet_ctrl_dino')
     parser.add_argument('--num_workers', default=4, type=int)
     parser.add_argument('--use_amp', action='store_true')
     parser.add_argument('--log_freq', default=100, type=int)
