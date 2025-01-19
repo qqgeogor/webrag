@@ -416,8 +416,9 @@ def train_ebm_gan(args):
                 real_samples = real_samples.detach().requires_grad_(True)
                 fake_samples = generator(z,c_real.detach()).detach().requires_grad_(True)
                 
-                c_fake = discriminator.net(aug_samples.detach()).squeeze()
-
+                # c_fake = discriminator.net(aug_samples.detach()).squeeze()
+                c_fake = discriminator.net(fake_samples.detach()).squeeze()
+                
                 loss_cos,loss_tcr = simsiam_loss(c_real,c_fake,c_real,c_fake)
                 cl_loss = loss_tcr+loss_cos
                 # Compute energies
