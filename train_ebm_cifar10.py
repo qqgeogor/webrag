@@ -206,6 +206,15 @@ def train_ebm(args):
     # Load CIFAR-10
     trainset = torchvision.datasets.CIFAR10(root=args.data_path, train=True,
                                           download=True, transform=transform)
+    
+        
+    # Filter the dataset to only include class 1
+    class_1_indices = [i for i, label in enumerate(trainset.targets) if label == 1]
+    trainset.data = trainset.data[class_1_indices]
+    trainset.targets = [trainset.targets[i] for i in class_1_indices]
+    
+
+    
     trainloader = DataLoader(trainset, batch_size=args.batch_size,
                            shuffle=True, num_workers=args.num_workers)
 

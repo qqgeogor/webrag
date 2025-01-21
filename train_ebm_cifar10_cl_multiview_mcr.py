@@ -140,56 +140,78 @@ class SimSiamModel(nn.Module):
     
 
 
+# def mcr_nv_loss(ps):
+#     c = ps.shape[-1]
+#     b = ps.shape[-2]
+#     n_views = len(ps)
+#     ps =F.normalize(ps,dim=-1)
+    
+#     joint_p = ps.reshape(-1,c)
+#     comp = R_nonorm(joint_p)
+    
+#     expd = 0
+#     for i in range(n_views):
+#         expd += R_nonorm(ps[i,:,:])/n_views
+    
+#     return expd.mean(),comp.mean()
+    
+
+
+# def mcr_nv_loss(ps):
+#     c = ps.shape[-1]
+#     b = ps.shape[-2]
+#     ps =F.normalize(ps,dim=-1)
+    
+#     joint_p = ps.reshape(-1,c)
+#     expd = R_nonorm(joint_p)
+    
+#     comp = 0
+#     for i in range(b):
+#         comp += R_nonorm(ps[:,i,:])/b
+    
+#     return expd.mean(),comp.mean()
+
+
+
 def mcr_nv_loss(ps):
     c = ps.shape[-1]
     b = ps.shape[-2]
-    n_views = len(ps)
     ps =F.normalize(ps,dim=-1)
     
-    joint_p = ps.reshape(-1,c)
-    comp = R_nonorm(joint_p)
-    
+    # joint_p = ps.reshape(-1,c)
+    # comp = R_nonorm(joint_p)
     expd = 0
-    for i in range(n_views):
-        expd += R_nonorm(ps[i,:,:])/n_views
-    
-    return expd.mean(),comp.mean()
-    
-
-
-def mcr_nv_loss(ps):
-    c = ps.shape[-1]
-    b = ps.shape[-2]
-    n_views = len(ps)
-    ps =F.normalize(ps,dim=-1)
-    
-    joint_p = ps.reshape(-1,c)
-    expd = R_nonorm(joint_p)
-    
     comp = 0
     for i in range(b):
-        comp += R_nonorm(ps[:,i,:])/b
-    
+        current_batch = ps[:,i,:]
+        other_batches = torch.cat([ps[:,j,:] for j in range(b) if j != i],dim=0)
+        joint_p = torch.cat([current_batch,other_batches.detach()],dim=0)
+        expd += R_nonorm(joint_p)/b
+        comp += R_nonorm(current_batch)/b
+
     return expd.mean(),comp.mean()
 
 
+# def mcr_nv_loss(ps):
+#     c = ps.shape[-1]
+#     b = ps.shape[-2]
+#     v = ps.shape[0]
 
-def mcr_nv_loss(ps):
-    c = ps.shape[-1]
-    b = ps.shape[-2]
-    n_views = len(ps)
-    ps =F.normalize(ps,dim=-1)
-    
-    
-    expd = 0
-    for i in range(n_views):
-        expd += R_nonorm(ps[i,:,:])/n_views
-    
-    comp = 0
-    for i in range(b):
-        comp += R_nonorm(ps[:,i,:])/b
-    
-    return expd.mean(),comp.mean()
+#     ps =F.normalize(ps,dim=-1)
+#     # joint_p = ps.reshape(-1,c)
+#     # comp = R_nonorm(joint_p)
+#     expd = 0
+#     comp = 0
+#     for i in range(v):
+#         current_view = ps[i,:,:]
+#         other_views = torch.cat([ps[j,:,:] for j in range(v) if j != i],dim=0)
+#         joint_p = torch.cat([current_view.detach(),other_views],dim=0)
+#         expd += R_nonorm(current_view)/v
+#         comp += R_nonorm(joint_p)/v
+
+#     return expd.mean(),comp.mean()
+
+
 
 
 def R_nonorm(Z,eps=0.5):
@@ -275,7 +297,7 @@ def train_ebm(args):
 
 
             # Compute loss
-            loss = loss_mcr + loss_gp*args.gp_weight
+            loss = loss_mcr #+ loss_gp*args.gp_weight
             # Backward pass
             optimizer.zero_grad()
             loss.backward()

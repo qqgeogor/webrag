@@ -21,6 +21,13 @@ def zero_centered_gradient_penalty(samples, critics):
     return grad.square().sum([1, 2, 3])
 
 
+
+def zero_centered_gradient_penalty_mcr(real_samples, fake_samples,model):
+    critics = mcr(model(real_samples),model(fake_samples))
+    grad1,grad2 = torch.autograd.grad(outputs=critics, inputs=[real_samples,fake_samples], create_graph=True)
+    return grad1.square().sum([1, 2, 3]).mean(), grad2.square().sum([1, 2, 3]).mean()
+
+
 class EnergyNet(nn.Module):
     def __init__(self, img_channels=3, hidden_dim=64):
         super().__init__()
@@ -43,7 +50,7 @@ class EnergyNet(nn.Module):
             nn.LeakyReLU(0.2),
             
             # Final conv to scalar energy: [B, 512, 2, 2] -> [B, 1, 1, 1]
-            nn.Conv2d(hidden_dim * 8, 128, 2, 1, 0)
+            nn.Conv2d(hidden_dim * 8, 256, 2, 1, 0)
         )
     
     def forward(self, x):
@@ -283,6 +290,28 @@ class Generator(nn.Module):
     def forward(self, z):
         return self.net(z)
 
+
+
+def compute_gradient_penalty(discriminator, real_samples, fake_samples, device):
+    """Compute gradient penalty for improved training stability"""
+    alpha = torch.rand((real_samples.size(0), 1, 1, 1), device=device)
+    interpolates = (alpha * real_samples + (1 - alpha) * fake_samples).requires_grad_(True)
+    
+    d_interpolates = discriminator(interpolates)
+    gradients = torch.autograd.grad(
+        outputs=d_interpolates,
+        inputs=interpolates,
+        grad_outputs=torch.ones_like(d_interpolates),
+        create_graph=True,
+        retain_graph=True,
+        only_inputs=True
+    )[0]
+    
+    gradients = gradients.view(gradients.size(0), -1)
+    gradient_penalty = ((gradients.norm(2, dim=1) - 1) ** 2).mean()
+    return gradient_penalty
+
+
 # Modify training function
 def train_ebm_gan(args):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -374,10 +403,16 @@ def train_ebm_gan(args):
                 # Compute energies
                 real_energy = discriminator(real_samples)
                 fake_energy = discriminator(fake_samples)
+
                 
                 r1 = zero_centered_gradient_penalty(real_samples, real_energy).mean()
                 r2 = zero_centered_gradient_penalty(fake_samples, fake_energy).mean()
-                d_loss = -mcr(real_energy,fake_energy) + args.gp_weight/2 * (r1 + r2)
+
+
+                # gp = compute_gradient_penalty(discriminator, real_samples, fake_samples, device)
+                # r1,r2 = zero_centered_gradient_penalty_mcr(real_samples, fake_samples,discriminator)
+                
+                d_loss = -mcr(real_energy,fake_energy)# +  + args.gp_weight * (0.7*r1)#+0.3*r2)
                 # Improved EBM-GAN discriminator loss
                 # d_loss = ((real_energy) + (-fake_energy)).mean()
                 
@@ -405,7 +440,7 @@ def train_ebm_gan(args):
             # Improved generator loss
             # g_loss = (fake_energy).mean()
             g_loss = mcr(real_energy,fake_energy)
-            # g_loss += -R(real_energy)*0.2
+            g_loss += -R(fake_energy)*0.2
             # g_loss += (R(fake_energy)-R(real_energy)).abs().mean()*0.2
             
             g_loss.backward()
@@ -498,8 +533,8 @@ def get_args_parser():
     parser.add_argument('--epochs', default=1200, type=int)
     parser.add_argument('--batch_size', default=128, type=int)
     parser.add_argument('--lr', default=1e-4, type=float)
-    parser.add_argument('--data_path', default='/home/qianqian/repo/cnn_cl/data', type=str)
-    parser.add_argument('--output_dir', default='./output/cifar10-ebm-gan-r3mcr-car')
+    parser.add_argument('--data_path', default='c:/dataset', type=str)
+    parser.add_argument('--output_dir', default='F:/output/cifar10-ebm-gan-r3mcr-car')
     parser.add_argument('--num_workers', default=4, type=int)
     parser.add_argument('--use_amp', action='store_true')
     parser.add_argument('--log_freq', default=100, type=int)
