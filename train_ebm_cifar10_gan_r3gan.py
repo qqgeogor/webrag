@@ -315,10 +315,10 @@ def train_ebm_gan(args):
     trainset = torchvision.datasets.CIFAR10(root=args.data_path, train=True,
                                           download=True, transform=transform)
     
-    # Filter the dataset to only include class 1
-    class_1_indices = [i for i, label in enumerate(trainset.targets) if label == 1]
-    trainset.data = trainset.data[class_1_indices]
-    trainset.targets = [trainset.targets[i] for i in class_1_indices]
+    # # Filter the dataset to only include class 1
+    # class_1_indices = [i for i, label in enumerate(trainset.targets) if label == 1]
+    # trainset.data = trainset.data[class_1_indices]
+    # trainset.targets = [trainset.targets[i] for i in class_1_indices]
     
 
     trainloader = DataLoader(trainset, batch_size=args.batch_size,
@@ -496,9 +496,9 @@ def get_args_parser():
     
     # Add GAN-specific parameters
     parser.add_argument('--latent_dim', default=100, type=int)
-    parser.add_argument('--g_lr', default=1e-4, type=float)
-    parser.add_argument('--d_lr', default=3e-4, type=float)
-    parser.add_argument('--n_critic', default=5, type=int,
+    parser.add_argument('--g_lr', default=2e-4, type=float)
+    parser.add_argument('--d_lr', default=2e-4, type=float)
+    parser.add_argument('--n_critic', default=1, type=int,
                         help='Number of discriminator updates per generator update')
     parser.add_argument('--gp_weight', default=0.05, type=float,
                         help='Weight of gradient penalty')
@@ -515,7 +515,7 @@ def get_args_parser():
     parser.add_argument('--lr', default=1e-4, type=float)
 
     parser.add_argument('--data_path', default='c:/dataset', type=str)
-    parser.add_argument('--output_dir', default='F:/output/cifar10-ebm-gan-r3gan')
+    parser.add_argument('--output_dir', default='F:/output/cifar10-ebm-gan-r3gan-all')
     parser.add_argument('--num_workers', default=4, type=int)
     parser.add_argument('--use_amp', action='store_true')
     parser.add_argument('--log_freq', default=100, type=int)
