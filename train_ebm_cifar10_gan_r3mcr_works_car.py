@@ -12,7 +12,7 @@ import numpy as np
 from tqdm import tqdm
 import argparse
 import torch.nn.functional as F
-
+import utils_ibot as utils
 
 
 def zero_centered_gradient_penalty(samples, critics):
@@ -99,8 +99,16 @@ def R(Z,eps=0.5):
     return out.mean()
 
 
+# def mcr(Z1,Z2):
+#     return R(torch.cat([Z1,Z2],dim=0))-0.5*R(Z1)-0.5*R(Z2)
+
+
+
 def mcr(Z1,Z2):
-    return R(torch.cat([Z1,Z2],dim=0))-0.5*R(Z1)-0.5*R(Z2)
+    # -I(X,Y)
+    p1 = R(torch.cat([Z1,Z2.detach()],dim=0)) - R(Z1)
+    p2 = R(torch.cat([Z1.detach(),Z2],dim=0)) - R(Z2)
+    return (p1+p2).mean()
 
 
 def dino_loss(Z1,Z2,scale_Z1=1e-2):
@@ -354,17 +362,14 @@ def train_ebm_gan(args):
         betas=(0.5, 0.999)
     )
     
-    # Add Cosine Annealing schedulers
-    g_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-        g_optimizer,
-        T_max=args.epochs,
-        eta_min=args.min_lr
+    lr_schedule = utils.cosine_scheduler(
+        args.lr,  # linear scaling rule
+        args.min_lr,
+        args.epochs, len(trainloader),
+        warmup_epochs=args.warmup_epochs,
     )
-    d_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-        d_optimizer,
-        T_max=args.epochs,
-        eta_min=args.min_lr
-    )
+
+
     start_epoch = 0
     # Add checkpoint loading logic
     if args.resume:
@@ -376,8 +381,6 @@ def train_ebm_gan(args):
             discriminator.load_state_dict(checkpoint['discriminator_state_dict'])
             g_optimizer.load_state_dict(checkpoint['g_optimizer_state_dict'])
             d_optimizer.load_state_dict(checkpoint['d_optimizer_state_dict'])
-            g_scheduler.load_state_dict(checkpoint['g_scheduler_state_dict'])
-            d_scheduler.load_state_dict(checkpoint['d_scheduler_state_dict'])
             start_epoch = checkpoint['epoch'] + 1
             print(f"Resuming from epoch {start_epoch}")
     
@@ -387,6 +390,11 @@ def train_ebm_gan(args):
         discriminator.train()
         
         for i, (real_samples, _) in enumerate(tqdm(trainloader)):
+            idx = epoch * len(trainloader) + i
+            lr = lr_schedule[idx]
+            g_optimizer.param_groups[0]['lr'] = lr
+            d_optimizer.param_groups[0]['lr'] = lr
+
             batch_size = real_samples.size(0)
             real_samples = real_samples.to(device)
             
@@ -408,11 +416,15 @@ def train_ebm_gan(args):
                 r1 = zero_centered_gradient_penalty(real_samples, real_energy).mean()
                 r2 = zero_centered_gradient_penalty(fake_samples, fake_energy).mean()
 
+<<<<<<< HEAD
 
                 # gp = compute_gradient_penalty(discriminator, real_samples, fake_samples, device)
                 # r1,r2 = zero_centered_gradient_penalty_mcr(real_samples, fake_samples,discriminator)
                 
                 d_loss = -mcr(real_energy,fake_energy)# +  + args.gp_weight * (0.7*r1)#+0.3*r2)
+=======
+                d_loss = -mcr(real_energy,fake_energy) #+ args.gp_weight/2 * (r1 + r2)
+>>>>>>> 11a695951b21365240c7b0e94b4ff745b5e408c1
                 # Improved EBM-GAN discriminator loss
                 # d_loss = ((real_energy) + (-fake_energy)).mean()
                 
@@ -456,10 +468,7 @@ def train_ebm_gan(args):
                       f'Fake Energy: {R(fake_energy).mean().item():.4f}, '
                       f'G_LR: {current_g_lr:.6f}, D_LR: {current_d_lr:.6f}'
                       )
-        
-        # Step the schedulers at the end of each epoch
-        g_scheduler.step()
-        d_scheduler.step()
+
         
         # Save samples and model checkpoints
         if epoch % args.save_freq == 0:
@@ -470,8 +479,6 @@ def train_ebm_gan(args):
                 'discriminator_state_dict': discriminator.state_dict(),
                 'g_optimizer_state_dict': g_optimizer.state_dict(),
                 'd_optimizer_state_dict': d_optimizer.state_dict(),
-                'g_scheduler_state_dict': g_scheduler.state_dict(),
-                'd_scheduler_state_dict': d_scheduler.state_dict(),
             }, os.path.join(args.output_dir, f'ebm_gan_checkpoint_{epoch}.pth'))
 
 
@@ -516,18 +523,21 @@ def get_args_parser():
     
     # Add GAN-specific parameters
     parser.add_argument('--latent_dim', default=100, type=int)
-    parser.add_argument('--g_lr', default=1.5e-4, type=float)
-    parser.add_argument('--d_lr', default=1.5e-4, type=float)
+    parser.add_argument('--g_lr', default=2e-4, type=float)
+    parser.add_argument('--d_lr', default=2e-4, type=float)
     parser.add_argument('--n_critic', default=1, type=int,
                         help='Number of discriminator updates per generator update')
     parser.add_argument('--gp_weight', default=1000, type=float,
                         help='Weight of gradient penalty')
     
     # Modify learning rates
-    parser.add_argument('--g_beta1', default=0.0, type=float,
+    parser.add_argument('--g_beta1', default=0.5, type=float,
                         help='Beta1 for generator optimizer')
-    parser.add_argument('--g_beta2', default=0.9, type=float,
+    parser.add_argument('--g_beta2', default=0.999, type=float,
                         help='Beta2 for generator optimizer')
+    parser.add_argument('--warmup_epochs', default=5, type=int,
+                        help='Number of warmup epochs')
+
     
     # Existing parameters
     parser.add_argument('--epochs', default=1200, type=int)

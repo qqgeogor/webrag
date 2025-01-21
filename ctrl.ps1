@@ -57,5 +57,5 @@ conda activate F:\condaenv\llma
 # python .\train_ebm_cifar10_gan_r3gan_ctrl_dino.py --resume F:/output/tiny_imagenet_ctrl_dino/ebm_gan_checkpoint_91.pth
 
 
-python .\train_ebm_cifar10_gan_r3gan_class.py #--resume F:/output/tiny_imagenet_ctrl_dino_class/ebm_gan_checkpoint_174.pth --batch_size 1024 --save_freq 10
+python .\train_ebm_cifar10_gan_r3gan_class.py --resume F:/output/tiny_imagenet_ctrl_dino_class/ebm_gan_checkpoint_231.pth #--batch_size 1024 --save_freq 10
 
