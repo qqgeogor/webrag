@@ -206,6 +206,14 @@ def train_ebm(args):
     # Load CIFAR-10
     trainset = torchvision.datasets.CIFAR10(root=args.data_path, train=True,
                                           download=True, transform=transform)
+    
+        
+    if args.cls != -1:
+        trainset = torch.utils.data.Subset(trainset, [i for i in range(len(trainset)) if trainset.targets[i] == args.cls])  
+        print(f"Using class {args.cls} for training")   
+
+
+    
     trainloader = DataLoader(trainset, batch_size=args.batch_size,
                            shuffle=True, num_workers=args.num_workers)
 
@@ -262,44 +270,29 @@ def train_ebm(args):
 
             with autocast():
                 neg_samples = sampler.sample(model, init_samples)
-                fake_samples = neg_samples
-                real_samples = real_samples.detach().requires_grad_(True)
-                fake_samples = fake_samples.detach().requires_grad_(True)
-
+                
                 # Compute energies
-                real_energy = model(real_samples)
-                fake_energy = model(fake_samples)
-
+                pos_energy = model(real_samples)
+                neg_energy = model(neg_samples.detach())
                 # loss_energy = model(neg_samples)*0.1
                 
-                # loss = ( pos_energy.mean() - neg_energy.mean())
+                loss = ( pos_energy.mean() - neg_energy.mean())
                 
-                realistic_logits = real_energy - fake_energy
-                d_loss = F.softplus(-realistic_logits)
-                # Improved EBM-GAN discriminator loss
-                # d_loss = (F.softplus(real_energy) + (-fake_energy))
-                
-                d_loss = d_loss 
-                loss = d_loss.mean()
-
                 
                 # # Contrastive divergence loss
                 # loss = ( pos_energy.mean().detach() - neg_energy.mean())
                 # loss += ( pos_energy.mean() - neg_energy.mean().detach())
-                
-                args.gp_weight = 0.05
                 if args.gp_weight > 0:  
-                    gp = compute_gradient_penalty(model, real_samples, real_samples, device)
-                    gp += compute_gradient_penalty(model, fake_samples, fake_samples, device)
+                    gp = compute_gradient_penalty(model, real_samples, neg_samples, device)
                     # Contrastive divergence loss
                     # loss += loss_energy.mean()
-                    loss += gp*args.gp_weight/2
+                    loss += gp*args.gp_weight
                 # loss = ( pos_energy.mean() - neg_energy.mean())
                 
             scaler.scale(loss).backward()
             scaler.step(optimizer)
             scaler.update()
-            
+        
             
             optimizer.zero_grad()
             total_loss += loss.item()
@@ -307,8 +300,8 @@ def train_ebm(args):
             if i % args.log_freq == 0:
                 print(f'Epoch [{epoch}/{args.epochs}], Step [{i}/{len(trainloader)}], '
                       f'Loss: {loss.item():.4f}, '
-                      f'Real Energy: {real_energy.mean().item():.4f}, '
-                      f'Fake Energy: {fake_energy.mean().item():.4f}')
+                      f'Pos Energy: {pos_energy.mean().item():.4f}, '
+                      f'Neg Energy: {neg_energy.mean().item():.4f}')
         scheduler.step(epoch)
         # Save samples and model checkpoint
         if epoch % args.save_freq == 0:
@@ -329,7 +322,7 @@ def save_samples(model, sampler, epoch, output_dir, device, n_samples=36):
     # Use no_grad only for visualization
     with torch.no_grad():
         # Save final samples
-        grid = make_grid(samples, nrow=6, normalize=True, value_range=(-1, 1))
+        grid = make_grid(samples, nrow=6, normalize=True, range=(-1, 1))
         plt.figure(figsize=(10, 10))
         plt.imshow(grid.cpu().permute(1, 2, 0))
         plt.axis('off')
@@ -346,7 +339,7 @@ def save_samples(model, sampler, epoch, output_dir, device, n_samples=36):
                 trajectory_samples = torch.cat([traj[0:6] for traj in selected_trajectories])
                 trajectory_grid = make_grid(
                     trajectory_samples,
-                    nrow=6, normalize=True, value_range=(-1, 1)
+                    nrow=6, normalize=True, range=(-1, 1)
                 )
                 plt.figure(figsize=(15, 10))
                 plt.imshow(trajectory_grid.cpu().permute(1, 2, 0))
@@ -371,7 +364,7 @@ def get_args_parser():
     parser.add_argument('--step_size', default=10.0, type=float)
     parser.add_argument('--noise_scale', default=0.005, type=float)
     parser.add_argument('--gp_weight', default=10.0, type=float)
-    parser.add_argument('--cls', default=-1, type=int)
+    
     # System parameters
     parser.add_argument('--data_path', default='c:/dataset', type=str)
     parser.add_argument('--output_dir', default='F:/output/cifar10-ebm')

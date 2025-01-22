@@ -50,12 +50,19 @@ class EnergyNet(nn.Module):
             nn.LeakyReLU(0.2),
             
             # Final conv to scalar energy: [B, 512, 2, 2] -> [B, 1, 1, 1]
-            nn.Conv2d(hidden_dim * 8, 256, 2, 1, 0)
+            nn.Conv2d(hidden_dim * 8, 512, 2, 1, 0)
+        )
+        self.projector = nn.Sequential(
+            nn.Linear(512, 1024),
+            nn.LeakyReLU(0.2),
+            nn.Linear(1024, 1024),
+            nn.LeakyReLU(0.2),
+            nn.Linear(1024, 256),
         )
     
     def forward(self, x):
         Z = self.net(x).squeeze()
-        #Z = R(Z)
+        Z = self.projector(Z)
         return Z
 
 class ResBlock(nn.Module):
@@ -89,6 +96,21 @@ def R(Z,eps=0.5):
     b = Z.shape[-2]
     
     Z = F.normalize(Z, p=2, dim=-1)
+    cov = Z.transpose(-2,-1) @ Z
+    I = torch.eye(cov.size(-1)).to(Z.device)
+    alpha = c/(b*eps)
+    
+    cov = alpha * cov +  I
+
+    out = 0.5*torch.logdet(cov)
+    return out.mean()
+
+
+
+def R_nonorm(Z,eps=0.5):
+    c = Z.shape[-1]
+    b = Z.shape[-2]
+    
     cov = Z.T @ Z
     I = torch.eye(cov.size(-1)).to(Z.device)
     alpha = c/(b*eps)
@@ -106,9 +128,26 @@ def R(Z,eps=0.5):
 
 def mcr(Z1,Z2):
     # -I(X,Y)
-    p1 = R(torch.cat([Z1,Z2.detach()],dim=0)) - R(Z1)
-    p2 = R(torch.cat([Z1.detach(),Z2],dim=0)) - R(Z2)
+    p1 = R(torch.cat([Z1,Z2],dim=0)) - R(Z1)
+    p2 = R(torch.cat([Z1,Z2],dim=0)) - R(Z2)
     return (p1+p2).mean()
+
+
+def ig(Z1,Z2):
+    b,c = Z1.shape
+    h =8
+    Z1 = Z1.reshape(b,-1,h).transpose(0,-1)
+    Z2 = Z2.reshape(b,-1,h).transpose(0,-1)
+    # -I(X,Y)
+    p1 = R(torch.cat([Z1,Z2],dim=0)) - R(Z1)
+    p2 = R(torch.cat([Z1,Z2],dim=0)) - R(Z2)
+    return (p1+p2).mean()
+
+def ig(Z1,Z2):
+
+    p2 = R(torch.cat([Z1,Z2],dim=0)) - R(Z2)
+    return p2
+
 
 
 def dino_loss(Z1,Z2,scale_Z1=1e-2):
@@ -119,49 +158,6 @@ def tcr_loss(Z1,Z2):
     return R(Z1).mean() - R(Z2).mean()
 
 
-class TCREnergyNet(nn.Module):
-    def __init__(self, img_channels=3, hidden_dim=64):
-        super().__init__()
-        
-        # Initial conv layer
-        self.initial = nn.Sequential(
-            nn.Conv2d(img_channels, hidden_dim, 3, 1, 1),
-            nn.GroupNorm(8, hidden_dim),
-            nn.LeakyReLU(0.2)
-        )
-        
-        # ResNet blocks with downsampling
-        self.layer1 = ResBlock(hidden_dim, hidden_dim * 2, stride=2)
-        self.layer2 = ResBlock(hidden_dim * 2, hidden_dim * 4, stride=2)
-        self.layer3 = ResBlock(hidden_dim * 4, hidden_dim * 8, stride=2)
-        self.layer4 = ResBlock(hidden_dim * 8, hidden_dim * 8, stride=2)
-        
-        # Final energy output
-        self.energy_head = nn.Sequential(
-            nn.Conv2d(hidden_dim * 8, hidden_dim * 4, 2, 1, 0),
-            nn.GroupNorm(8, hidden_dim * 4),
-            nn.LeakyReLU(0.2),
-            nn.Conv2d(hidden_dim * 4, hidden_dim * 4, 1, 1, 0)
-        )
-        
-        # Initialize weights
-        self.apply(self._init_weights)
-    
-    def _init_weights(self, m):
-        if isinstance(m, nn.Conv2d):
-            nn.init.orthogonal_(m.weight.data)
-            if m.bias is not None:
-                nn.init.constant_(m.bias.data, 0)
-    
-    def forward(self, x):
-        x = self.initial(x)
-        x = self.layer1(x)
-        x = self.layer2(x)
-        x = self.layer3(x)
-        x = self.layer4(x)
-        Z = self.energy_head(x).squeeze()
-        Z = R(Z)
-        return Z
 
 class ResNetEnergyNet(nn.Module):
     def __init__(self, img_channels=3, hidden_dim=64):
@@ -374,16 +370,15 @@ def train_ebm_gan(args):
     # Add checkpoint loading logic
     if args.resume:
         checkpoint_path = args.resume
-        if os.path.isfile(checkpoint_path):
-            print(f"Loading checkpoint from {checkpoint_path}")
-            checkpoint = torch.load(checkpoint_path)
-            generator.load_state_dict(checkpoint['generator_state_dict'])
-            discriminator.load_state_dict(checkpoint['discriminator_state_dict'])
-            g_optimizer.load_state_dict(checkpoint['g_optimizer_state_dict'])
-            d_optimizer.load_state_dict(checkpoint['d_optimizer_state_dict'])
-            start_epoch = checkpoint['epoch'] + 1
-            print(f"Resuming from epoch {start_epoch}")
-    
+        print(f"Loading checkpoint from {checkpoint_path}")
+        checkpoint = torch.load(checkpoint_path)
+        generator.load_state_dict(checkpoint['generator_state_dict'])
+        discriminator.load_state_dict(checkpoint['discriminator_state_dict'])
+        g_optimizer.load_state_dict(checkpoint['g_optimizer_state_dict'])
+        d_optimizer.load_state_dict(checkpoint['d_optimizer_state_dict'])
+        start_epoch = checkpoint['epoch'] + 1
+        print(f"Resuming from epoch {start_epoch}")
+
     # Training loop
     for epoch in range(start_epoch,args.epochs):
         generator.train()
@@ -416,15 +411,15 @@ def train_ebm_gan(args):
                 r1 = zero_centered_gradient_penalty(real_samples, real_energy).mean()
                 r2 = zero_centered_gradient_penalty(fake_samples, fake_energy).mean()
 
-<<<<<<< HEAD
 
-                # gp = compute_gradient_penalty(discriminator, real_samples, fake_samples, device)
-                # r1,r2 = zero_centered_gradient_penalty_mcr(real_samples, fake_samples,discriminator)
-                
-                d_loss = -mcr(real_energy,fake_energy)# +  + args.gp_weight * (0.7*r1)#+0.3*r2)
-=======
-                d_loss = -mcr(real_energy,fake_energy) #+ args.gp_weight/2 * (r1 + r2)
->>>>>>> 11a695951b21365240c7b0e94b4ff745b5e408c1
+                d_loss = -ig(real_energy,fake_energy)  + args.gp_weight/2 * (r1 + r2)
+                # d_loss += R(real_energy)*0.5
+
+                # real_energy = F.normalize(real_energy,p=2,dim=-1)
+                # fake_energy = F.normalize(fake_energy,p=2,dim=-1)
+
+                # d_loss = R_nonorm( 0.5*(real_energy+fake_energy))
+
                 # Improved EBM-GAN discriminator loss
                 # d_loss = ((real_energy) + (-fake_energy)).mean()
                 
@@ -451,8 +446,15 @@ def train_ebm_gan(args):
             
             # Improved generator loss
             # g_loss = (fake_energy).mean()
-            g_loss = mcr(real_energy,fake_energy)
-            g_loss += -R(fake_energy)*0.2
+            # g_loss = mcr(real_energy,fake_energy)
+            # g_loss += -R(fake_energy)*0.5
+            g_loss = ig(real_energy,fake_energy)
+
+            # real_energy = F.normalize(real_energy,p=2,dim=-1)
+            # fake_energy = F.normalize(fake_energy,p=2,dim=-1)
+
+            # g_loss = -R_nonorm( 0.5*(real_energy+fake_energy))
+
             # g_loss += (R(fake_energy)-R(real_energy)).abs().mean()*0.2
             
             g_loss.backward()
@@ -527,7 +529,7 @@ def get_args_parser():
     parser.add_argument('--d_lr', default=2e-4, type=float)
     parser.add_argument('--n_critic', default=1, type=int,
                         help='Number of discriminator updates per generator update')
-    parser.add_argument('--gp_weight', default=1000, type=float,
+    parser.add_argument('--gp_weight', default=100, type=float,
                         help='Weight of gradient penalty')
     
     # Modify learning rates
@@ -548,7 +550,7 @@ def get_args_parser():
     parser.add_argument('--num_workers', default=4, type=int)
     parser.add_argument('--use_amp', action='store_true')
     parser.add_argument('--log_freq', default=100, type=int)
-    parser.add_argument('--save_freq', default=10, type=int)
+    parser.add_argument('--save_freq', default=1, type=int)
     
     # Add learning rate scheduling parameters
     parser.add_argument('--min_lr', default=1e-6, type=float,
