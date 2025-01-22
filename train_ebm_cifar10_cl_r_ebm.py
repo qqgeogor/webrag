@@ -209,34 +209,41 @@ def R_nonorm(Z,eps=0.5):
 # Add SimSiam loss function
 def simsiam_loss(p1, p2, h1, h2):
     p1 = F.normalize(p1, p=2, dim=-1)
-    p2 = F.normalize(p2, p=2, dim=-1)
-    loss_tcr = -R_nonorm(p1+p2).mean()
+    loss_tcr = -R_nonorm(p1).mean()
     loss_tcr *=1e-2
 
     # Negative cosine similarity
     loss_cos = (F.cosine_similarity(h1, p2.detach(), dim=-1).mean() + 
              F.cosine_similarity(h2, p1.detach(), dim=-1).mean()) * 0.5
     
-    loss_cos = 1-loss_cos
 
-    return loss_cos,loss_tcr
-
-# Add SimSiam loss function
-def simsiam_loss(p1, p2, h1, h2):
-    p1 = F.normalize(p1, p=2, dim=-1)
-    p2 = F.normalize(p2, p=2, dim=-1)
-    loss_tcr = -R_nonorm(p1+p2).mean()
-    loss_tcr *=1e-2
-
-    # Negative cosine similarity
-    loss_cos = (F.cosine_similarity(h1, p2.detach(), dim=-1).mean() + 
-             F.cosine_similarity(h2, p1.detach(), dim=-1).mean()) * 0.5
     
-    loss_cos = 1-loss_cos
-
     return loss_cos,loss_tcr
 
+# # Add SimSiam loss function
+# def simsiam_loss(p1, p2, h1, h2):
+#     p1 = F.normalize(p1, p=2, dim=-1)
+#     p2 = F.normalize(p2, p=2, dim=-1)
+#     loss_tcr = -R_nonorm(p1+p2).mean()
+#     loss_tcr *=1e-2
 
+#     # Negative cosine similarity
+#     loss_cos = (F.cosine_similarity(h1, p2.detach(), dim=-1).mean() + 
+#              F.cosine_similarity(h2, p1.detach(), dim=-1).mean()) * 0.5
+    
+#     loss_cos = 1-loss_cos
+
+#     return loss_cos,loss_tcr
+
+def ebm(real_energy,fake_energy):
+    loss_tcr = -R(real_energy)
+
+    realistic_logits = fake_energy - real_energy
+    realistic_logits = realistic_logits.sum(-1)
+    
+    d_loss = F.softplus(-realistic_logits).mean()
+    
+    return loss_tcr,d_loss
 
 # Add a function to visualize augmented views
 def visualize_augmentations(model, image, save_path=None):
@@ -317,7 +324,15 @@ def train_ebm(args):
             
             # Compute loss
             loss_cos,loss_tcr = simsiam_loss(p1, p2, h1, h2)
-            loss = loss_tcr
+
+
+            loss_tcr1,loss_ebm1 = ebm(p1,p2)
+            loss_tcr2,loss_ebm2 = ebm(p2,p1)
+            loss_tcr = (loss_tcr1+loss_tcr2)/2
+            loss_ebm = (loss_ebm1+loss_ebm2)/2
+
+
+            loss = loss_tcr+loss_ebm
             # Backward pass
             optimizer.zero_grad()
             loss.backward()
@@ -327,7 +342,7 @@ def train_ebm(args):
             
             if i % args.log_freq == 0:
                 print(f'Epoch [{epoch}/{args.epochs}], Step [{i}/{len(trainloader)}], '
-                      f'Loss: {loss.item():.4f}, Loss_cos: {loss_cos.item():.4f}, Loss_tcr: {loss_tcr.item():.4f}')
+                      f'Loss: {loss.item():.4f}, Loss_cos: {loss_cos.item():.4f}, Loss_tcr: {loss_tcr.item():.4f}, d_loss: {d_loss.item():.4f}')
 
         # Add visualization of augmentations periodically
         if epoch % args.save_freq == 0:
@@ -366,11 +381,11 @@ def get_args_parser():
     
     # System parameters
     parser.add_argument('--data_path', default='c:/dataset', type=str)
-    parser.add_argument('--output_dir', default='F:/output/cifar10-ebm-cl-r')
+    parser.add_argument('--output_dir', default='F:/output/cifar10-ebm-cl-ebm')
     parser.add_argument('--num_workers', default=4, type=int)
     parser.add_argument('--use_amp', action='store_true')
     parser.add_argument('--log_freq', default=100, type=int)
-    parser.add_argument('--save_freq', default=1, type=int)
+    parser.add_argument('--save_freq', default=10, type=int)
     parser.add_argument('--resume', default=None, type=str)
     
     return parser
