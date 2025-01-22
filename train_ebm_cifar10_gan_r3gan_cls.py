@@ -16,8 +16,7 @@ import utils_ibot as utils
 
 
 def zero_centered_gradient_penalty(samples, critics):
-    critics = R(critics)
-    grad, = torch.autograd.grad(outputs=critics, inputs=samples, create_graph=True)
+    grad, = torch.autograd.grad(outputs=critics.sum(), inputs=samples, create_graph=True)
     return grad.square().sum([1, 2, 3])
 
 
@@ -58,7 +57,7 @@ class EnergyNet(nn.Module):
             nn.LeakyReLU(0.2),
             nn.Linear(1024, 1024),
             nn.LeakyReLU(0.2),
-            nn.Linear(1024, 256),
+            nn.Linear(1024, 1),
         )
     
     def forward(self, x, labels):
@@ -359,7 +358,7 @@ def train_ebm_gan(args):
 
     # Initialize models
     generator = Generator(latent_dim=args.latent_dim, hidden_dim=64, num_classes=10, embedding_dim=100).to(device)
-    discriminator = ResNetEnergyNet(img_channels=3, hidden_dim=64).to(device)
+    # discriminator = ResNetEnergyNet(img_channels=3, hidden_dim=64).to(device)
     discriminator = EnergyNet(img_channels=3, hidden_dim=64, num_classes=10, embedding_dim=100).to(device)
     
     # Optimizers
@@ -430,7 +429,18 @@ def train_ebm_gan(args):
                 r2 = zero_centered_gradient_penalty(fake_samples, fake_energy).mean()
 
 
-                d_loss = -ig(real_energy,fake_energy)  + args.gp_weight/2 * (r1 + r2)
+                # d_loss = -ig(real_energy,fake_energy)  + args.gp_weight/2 * (r1 + r2)
+                realistic_logits = real_energy - fake_energy
+                d_loss = F.softplus(-realistic_logits)
+                # Improved EBM-GAN discriminator loss
+                # d_loss = (F.softplus(real_energy) + (-fake_energy))
+                
+                # r1 = zero_centered_gradient_penalty(real_samples, real_energy)
+                # r2 = zero_centered_gradient_penalty(fake_samples, fake_energy)
+
+                d_loss = d_loss + args.gp_weight/2 * (r1 + r2)
+                d_loss = d_loss.mean()
+
                 # d_loss += R(real_energy)*0.5
 
                 # real_energy = F.normalize(real_energy,p=2,dim=-1)
@@ -466,7 +476,12 @@ def train_ebm_gan(args):
             # g_loss = (fake_energy).mean()
             # g_loss = mcr(real_energy,fake_energy)
             # g_loss += -R(fake_energy)*0.5
-            g_loss = ig(real_energy,fake_energy)
+            # g_loss = ig(real_energy,fake_energy)
+            realistic_logits = fake_energy - real_energy
+            g_loss = F.softplus(-realistic_logits)
+            g_loss = g_loss.mean()
+            
+
 
             # real_energy = F.normalize(real_energy,p=2,dim=-1)
             # fake_energy = F.normalize(fake_energy,p=2,dim=-1)
@@ -579,7 +594,7 @@ def get_args_parser():
     parser.add_argument('--d_lr', default=2e-4, type=float)
     parser.add_argument('--n_critic', default=1, type=int,
                         help='Number of discriminator updates per generator update')
-    parser.add_argument('--gp_weight', default=100, type=float,
+    parser.add_argument('--gp_weight', default=0.5, type=float,
                         help='Weight of gradient penalty')
     
     # Modify learning rates
@@ -596,7 +611,7 @@ def get_args_parser():
     parser.add_argument('--batch_size', default=128, type=int)
     parser.add_argument('--lr', default=1e-4, type=float)
     parser.add_argument('--data_path', default='c:/dataset', type=str)
-    parser.add_argument('--output_dir', default='F:/output/cifar10-ebm-gan-r3mcr-car-conditioned')
+    parser.add_argument('--output_dir', default='F:/output/cifar10-ebm-gan-conditioned')
     parser.add_argument('--num_workers', default=4, type=int)
     parser.add_argument('--use_amp', action='store_true')
     parser.add_argument('--log_freq', default=100, type=int)

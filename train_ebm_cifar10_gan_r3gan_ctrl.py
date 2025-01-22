@@ -93,55 +93,6 @@ class ResBlock(nn.Module):
         return out
 
 
-
-def R(Z, eps=0.5, y=None):
-
-    c = Z.shape[-1]  # feature dimension
-    b = Z.shape[-2]  # batch size
-
-    
-    if y is not None:
-        # If y is provided, only select samples belonging to class y
-
-        mask = (y == y[0]).float()  # Create mask for samples of class y
-        mask = mask.view(-1, 1)  # Reshape to [b, 1]
-
-        
-
-        # Apply mask to normalize only selected samples
-
-        Z = F.normalize(Z, p=2, dim=-1)
-
-        Z = Z * mask  # Zero out samples not belonging to class y
-
-        
-
-        # Adjust batch size to count only selected samples
-
-        b = mask.sum()
-
-    else:
-
-        # Original normalization if no conditioning
-
-        Z = F.normalize(Z, p=2, dim=-1)
-
-    
-
-    cov = Z.T @ Z
-
-    I = torch.eye(cov.size(-1)).to(Z.device)
-
-    alpha = c/(b*eps)
-
-    
-    cov = alpha * cov + I
-    out = 0.5*torch.logdet(cov)
-
-
-    return out.mean()
-
-
 def R(Z,eps=0.5):
     c = Z.shape[-1]
     b = Z.shape[-2]

@@ -112,7 +112,7 @@ class BaseMCTS(ABC):
             node.value += value
             node = node.parent
 
-    def search(self, initial_state: Any, num_iterations: int) -> Any:
+    def search(self, initial_state: Any, num_iterations: int, return_path: bool = False) -> Any:
         """Main MCTS loop"""
         if num_iterations <= 0:
             raise ValueError("Number of iterations must be positive")
@@ -131,7 +131,18 @@ class BaseMCTS(ABC):
         if not self.root.children:
             raise RuntimeError("No moves were explored")
             
-        return max(self.root.children, key=lambda c: c.visits).state
+        best_child = max(self.root.children, key=lambda c: c.visits)
+        
+        if return_path:
+            # Construct path by following most visited children
+            path = [self.root.state]
+            current = self.root
+            while current.children:
+                current = max(current.children, key=lambda c: c.visits)
+                path.append(current.state)
+            return path
+            
+        return best_child.state
 
     @abstractmethod
     def get_possible_moves(self, state: Any) -> List[Any]:

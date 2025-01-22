@@ -256,6 +256,82 @@ Return only the numerical score between 0.0 and 1.0."""
             raise ValueError("No possible moves available")
         return random.choice(possible_moves)
 
+    def iterative_search(self, prompt: str, num_runs: int = 3, iterations_per_run: int = 50) -> str:
+        """
+        Perform multiple MCTS searches, using results from previous runs to inform the next run.
+        
+        Args:
+            prompt: The original question to solve
+            num_runs: Number of complete MCTS searches to perform
+            iterations_per_run: Number of iterations for each MCTS search
+        
+        Returns:
+            str: The best solution found across all runs
+        """
+        current_prompt = prompt
+        all_solutions = []
+        
+        for run in range(num_runs):
+            print(f"\nRun {run + 1}/{num_runs}")
+            
+            # Reset trajectories for new run
+            self.trajectories = []
+            
+            # Perform MCTS search with updated prompt
+            final_state = self.search(LLMState(original_prompt=current_prompt), iterations_per_run)
+            
+            # Evaluate the final state
+            score = self.evaluate_state(final_state)
+            
+            # Save trajectories with run number in filename
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            filename = f"mcts_trajectories_run{run+1}_{timestamp}.json"
+            self.save_trajectories_to_file(current_prompt, filename)
+            
+            print(f"Run {run + 1} score: {score}")
+            
+            # Store this run's solution
+            all_solutions.append((final_state, score))
+            
+            # Update prompt for next iteration using the results from this run
+            if run < num_runs - 1:  # Don't update after the last run
+                current_prompt = self._create_next_prompt(final_state, score)
+        
+        # Get the best solution
+        best_solution, best_score = max(all_solutions, key=lambda x: x[1])
+        
+        # Format the best solution
+        solution = "\n\n".join([
+            f"Step {i+1}: {step_prompt}\n{response}"
+            for i, (step_prompt, response) in enumerate(zip(best_solution.step_prompts, best_solution.responses))
+        ])
+        
+        return f"Best solution (score: {best_score}):\n\n{solution}"
+
+    def _create_next_prompt(self, current_state: LLMState, current_score: float) -> str:
+        """
+        Create a prompt for the next iteration based on current results.
+        """
+        # Combine all responses from the current run
+        current_solution = "\n".join([
+            f"Step {i+1}: {prompt}\nResponse: {response}"
+            for i, (prompt, response) in enumerate(zip(current_state.step_prompts, current_state.responses))
+        ])
+        
+        next_prompt = f"""Original question: {current_state.original_prompt}
+
+Previous iteration results (score: {current_score}):
+{current_solution}
+
+Based on these results, let's improve the solution further. Focus on:
+1. Areas that need more detailed explanation
+2. Any gaps in the current reasoning
+3. Potential improvements or alternative approaches
+
+Please provide a more refined answer to the original question."""
+
+        return next_prompt
+
 if __name__ == "__main__":
     mcts = LLMMCTS()
     prompt = """
@@ -265,11 +341,8 @@ if __name__ == "__main__":
     """
     
     print("Original Question:", prompt)
-    print("\nSolution:")
-    response = mcts.get_best_response(prompt, num_iterations=5)
+    print("\nSearching for best solution across multiple runs...")
+    response = mcts.iterative_search(prompt, num_runs=3, iterations_per_run=5)
     print(response)
-    
-    print("\nNumber of trajectories explored:", len(mcts.trajectories))
-    print("Trajectories saved to file")
 
 
