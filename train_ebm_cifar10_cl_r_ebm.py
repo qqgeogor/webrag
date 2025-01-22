@@ -236,13 +236,13 @@ def simsiam_loss(p1, p2, h1, h2):
 #     return loss_cos,loss_tcr
 
 def ebm(real_energy,fake_energy):
-    loss_tcr = -R(real_energy)
-
-    realistic_logits = fake_energy - real_energy
+    loss_tcr = -R(real_energy)*1e-2
+    
+    realistic_logits = fake_energy - real_energy.detach()
     realistic_logits = realistic_logits.sum(-1)
     
     d_loss = F.softplus(-realistic_logits).mean()
-    
+
     return loss_tcr,d_loss
 
 # Add a function to visualize augmented views
@@ -329,10 +329,10 @@ def train_ebm(args):
             loss_tcr1,loss_ebm1 = ebm(p1,p2)
             loss_tcr2,loss_ebm2 = ebm(p2,p1)
             loss_tcr = (loss_tcr1+loss_tcr2)/2
-            loss_ebm = (loss_ebm1+loss_ebm2)/2
+            d_loss = (loss_ebm1+loss_ebm2)/2
 
-
-            loss = loss_tcr+loss_ebm
+            
+            loss = loss_tcr+d_loss
             # Backward pass
             optimizer.zero_grad()
             loss.backward()
