@@ -16,7 +16,7 @@ import torch.nn.functional as F
 import copy
 
 from karas_sampler import KarrasSampler,get_sigmas_karras
-from ibot_ctrl import utils_ibot as utils
+import utils_ibot as utils
 import math
 from scipy.stats import norm
 import torch.distributed as dist

@@ -237,12 +237,14 @@ def simsiam_loss(p1, p2, h1, h2):
 
 def ebm(real_energy,fake_energy):
     loss_tcr = -R(real_energy)*1e-2
+    # d_loss = 1 - F.cosine_similarity(real_energy.detach(),fake_energy).mean()
     
-    realistic_logits = fake_energy - real_energy.detach()
-    realistic_logits = realistic_logits.sum(-1)
+    realistic_logits = real_energy.detach() - fake_energy
+    realistic_logits = realistic_logits.sum(-1).abs()
     
-    d_loss = F.softplus(-realistic_logits).mean()
-
+    # d_loss = F.softplus(realistic_logits).mean()
+    d_loss = realistic_logits.mean()
+    
     return loss_tcr,d_loss
 
 # Add a function to visualize augmented views
