@@ -307,7 +307,7 @@ def mahalanobis_distance(z1, z2, eps=1e-6):
 
 
 # Alternative energy function implementations
-def energy_function(real_energy, fake_energy, version='mse'):
+def energy_function(real_energy, fake_energy, version='mse',temperature=1):
     if version == 'mse':
         # Mean squared error (current implementation)
         return ((real_energy - fake_energy)**2).sum(-1).mean()
@@ -315,20 +315,16 @@ def energy_function(real_energy, fake_energy, version='mse'):
     elif version == 'l1':
         # L1 distance (absolute difference)
         return (real_energy - fake_energy).abs().sum(-1).mean()
-    
-    elif version == 'exp':
-        # Exponential form (similar to Boltzmann distribution)
-        return torch.exp(-(real_energy - fake_energy)**2).sum(-1).mean()
-    
+
     elif version == 'logsigmoid':
         # Log-based energy
         diff = (real_energy - fake_energy)**2
-        return F.logsigmoid(diff).sum(-1).mean()
+        return F.logsigmoid(diff/temperature).sum(-1).mean()
 
     elif version == 'softplus':
         # Log-based energy
         diff = (real_energy - fake_energy)**2
-        return -F.softplus(-diff).sum(-1).mean()
+        return F.softplus(diff/temperature).sum(-1).mean()
     
     elif version == 'cosine':
         return 1-F.cosine_similarity(real_energy.detach(),fake_energy).mean()

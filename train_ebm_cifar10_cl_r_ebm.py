@@ -306,8 +306,45 @@ def mahalanobis_distance(z1, z2, eps=1e-6):
     return distances
 
 
+
+def rbf_energy(real_energy, fake_energy, sigma=1.0, version='gaussian'):
+    """
+    RBF energy function with different kernels
+    Args:
+        real_energy: tensor of shape [B, D]
+        fake_energy: tensor of shape [B, D]
+        sigma: bandwidth parameter
+        version: type of RBF kernel
+    """
+    # Compute pairwise distances
+    diff = real_energy - fake_energy
+    squared_dist = (diff**2)
+    
+    if version == 'gaussian':
+        # Standard Gaussian RBF: exp(-||x-y||^2 / (2*sigma^2))
+        energy = torch.exp(-squared_dist / (2 * sigma**2))
+    
+    elif version == 'inverse_quadratic':
+        # Inverse quadratic: 1 / (1 + ||x-y||^2/sigma^2)
+        energy = 1 / (1 + squared_dist / sigma**2)
+    
+    elif version == 'inverse_multiquadric':
+        # Inverse multiquadratic: 1/sqrt(1 + ||x-y||^2/sigma^2)
+        energy = 1 / torch.sqrt(1 + squared_dist / sigma**2)
+    
+    elif version == 'rational_quadratic':
+        # Rational quadratic: (1 + ||x-y||^2/(2*alpha*sigma^2))^(-alpha)
+        alpha = 2.0  # shape parameter
+        energy = (1 + squared_dist/(2 * alpha * sigma**2))**(-alpha)
+    
+    # Make it a proper energy (negative log)
+    energy = -torch.log(energy + 1e-8)
+    
+    return energy.sum(dim=-1).mean()
+
 # Alternative energy function implementations
-def energy_function(real_energy, fake_energy, version='mse'):
+def energy_function(real_energy, fake_energy, version='mse',temperature=1):
+    
     if version == 'mse':
         # Mean squared error (current implementation)
         return ((real_energy - fake_energy)**2).sum(-1).mean()
@@ -318,17 +355,17 @@ def energy_function(real_energy, fake_energy, version='mse'):
     
     elif version == 'exp':
         # Exponential form (similar to Boltzmann distribution)
-        return torch.exp(-(real_energy - fake_energy)**2).sum(-1).mean()
+        return torch.exp(-(real_energy - fake_energy)**2/temperature).sum(-1).mean()
     
     elif version == 'logsigmoid':
         # Log-based energy
         diff = (real_energy - fake_energy)**2
-        return F.logsigmoid(diff).sum(-1).mean()
+        return F.logsigmoid(diff/temperature).sum(-1).mean()
 
     elif version == 'softplus':
         # Log-based energy
         diff = (real_energy - fake_energy)**2
-        return -F.softplus(-diff).sum(-1).mean()
+        return F.softplus(diff/temperature).sum(-1).mean()
     
     elif version == 'cosine':
         return 1-F.cosine_similarity(real_energy.detach(),fake_energy).mean()
@@ -350,8 +387,10 @@ def ebm(real_energy,fake_energy,teacher_temp=0.04,student_temp=0.1):
     # d_loss = hyperspherical_energy_loss(real_energy.detach(),fake_energy.detach())
     realistic_logits = real_energy.detach() - fake_energy
     # realistic_logits = (realistic_logits**2).sum(-1).mean()
-    d_loss = energy_function(real_energy.detach() ,fake_energy,version='softplus')
+    # d_loss = energy_function(real_energy.detach() ,fake_energy,version='softplus')
     
+    d_loss = rbf_energy(real_energy.detach() ,fake_energy,version='rational_quadratic')
+
     # realistic_logits = realistic_logits.abs()
     
     # realistic_logits = F.mse_loss(real_energy.detach(),fake_energy).sum(-1)
