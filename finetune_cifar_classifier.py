@@ -6,7 +6,7 @@ from torch.utils.data import DataLoader
 import os
 from pathlib import Path
 from tqdm import tqdm
-from train_ebm_cifar10_cl_r_ema_edm import SimSiamModel
+from train_ebm_cifar10_cl_r_ebm import SimSiamModel
 from torch.cuda.amp import autocast, GradScaler
 
 class CifarClassifier(nn.Module):

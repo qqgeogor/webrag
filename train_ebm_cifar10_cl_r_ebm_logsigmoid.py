@@ -323,12 +323,8 @@ def energy_function(real_energy, fake_energy, version='mse'):
     elif version == 'logsigmoid':
         # Log-based energy
         diff = (real_energy - fake_energy)**2
+        
         return F.logsigmoid(diff).sum(-1).mean()
-
-    elif version == 'softplus':
-        # Log-based energy
-        diff = (real_energy - fake_energy)**2
-        return -F.softplus(-diff).sum(-1).mean()
     
     elif version == 'cosine':
         return 1-F.cosine_similarity(real_energy.detach(),fake_energy).mean()
@@ -350,7 +346,7 @@ def ebm(real_energy,fake_energy,teacher_temp=0.04,student_temp=0.1):
     # d_loss = hyperspherical_energy_loss(real_energy.detach(),fake_energy.detach())
     realistic_logits = real_energy.detach() - fake_energy
     # realistic_logits = (realistic_logits**2).sum(-1).mean()
-    d_loss = energy_function(real_energy.detach() ,fake_energy,version='softplus')
+    d_loss = energy_function(real_energy.detach() ,fake_energy,version='logsigmoid')
     
     # realistic_logits = realistic_logits.abs()
     
@@ -512,7 +508,7 @@ def get_args_parser():
     
     # System parameters
     parser.add_argument('--data_path', default='c:/dataset', type=str)
-    parser.add_argument('--output_dir', default='F:/output/cifar10-ebm-cl-ebm')
+    parser.add_argument('--output_dir', default='F:/output/cifar10-ebm-cl-ebm-logsigmoid')
     parser.add_argument('--num_workers', default=4, type=int)
     parser.add_argument('--use_amp', action='store_true')
     parser.add_argument('--log_freq', default=100, type=int)

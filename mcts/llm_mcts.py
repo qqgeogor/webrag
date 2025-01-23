@@ -59,7 +59,7 @@ class LLMMCTS(BaseMCTS):
         self.max_depth = max_depth
         self.model = ChatOpenAI(
             model='deepseek-chat', 
-            openai_api_key='sk-9693411e1fcb4176ab62ed97f98c68f3', 
+            openai_api_key='sk-33a74c7a4aa94c7eb28a28a98852d0ac', 
             openai_api_base='https://api.deepseek.com/v1',
             temperature=temperature,
         )
@@ -298,8 +298,8 @@ Return only the numerical score between 0.0 and 1.0."""
                 current_prompt = self._create_next_prompt(final_state, score)
         
         # Get the best solution
-        best_solution, best_score = max(all_solutions, key=lambda x: x[1])
-        
+        # best_solution, best_score = max(all_solutions, key=lambda x: x[1])
+        best_solution, best_score = all_solutions[-1]
         # Format the best solution
         solution = "\n\n".join([
             f"Step {i+1}: {step_prompt}\n{response}"

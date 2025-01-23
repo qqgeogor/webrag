@@ -127,6 +127,7 @@ class SimSiamModel(nn.Module):
             nn.BatchNorm1d(proj_dim),
             nn.ReLU(inplace=True),
             nn.Linear(proj_dim, proj_dim),
+            nn.BatchNorm1d(proj_dim)
         )
         
 
@@ -298,46 +299,16 @@ def mahalanobis_distance(z1, z2, eps=1e-6):
     # Compute inverse of covariance matrix
     inv_cov = torch.linalg.inv(cov)
     
-    
     # Compute Mahalanobis distance
     diff = z1 - z2
     distances = torch.sqrt(torch.sum(torch.mm(diff, inv_cov) * diff, dim=1))
     
     return distances
 
-
-# Alternative energy function implementations
-def energy_function(real_energy, fake_energy, version='mse'):
-    if version == 'mse':
-        # Mean squared error (current implementation)
-        return ((real_energy - fake_energy)**2).sum(-1).mean()
-    
-    elif version == 'l1':
-        # L1 distance (absolute difference)
-        return (real_energy - fake_energy).abs().sum(-1).mean()
-    
-    elif version == 'exp':
-        # Exponential form (similar to Boltzmann distribution)
-        return torch.exp(-(real_energy - fake_energy)**2).sum(-1).mean()
-    
-    elif version == 'logsigmoid':
-        # Log-based energy
-        diff = (real_energy - fake_energy)**2
-        return F.logsigmoid(diff).sum(-1).mean()
-
-    elif version == 'softplus':
-        # Log-based energy
-        diff = (real_energy - fake_energy)**2
-        return -F.softplus(-diff).sum(-1).mean()
-    
-    elif version == 'cosine':
-        return 1-F.cosine_similarity(real_energy.detach(),fake_energy).mean()
-    
-def ebm(real_energy,fake_energy,teacher_temp=0.04,student_temp=0.1):
+def ebm(real_energy,fake_energy):
     real_energy = F.normalize(real_energy, p=2, dim=-1)
     fake_energy = F.normalize(fake_energy, p=2, dim=-1)
-    # real_energy = F.softmax(real_energy/teacher_temp,dim=-1)
-    # fake_energy = fake_energy/student_temp
+    
 
     loss_tcr = -R(real_energy)*1e-2
     # d_loss = 1 - F.cosine_similarity(real_energy.detach(),fake_energy).mean()
@@ -348,31 +319,27 @@ def ebm(real_energy,fake_energy,teacher_temp=0.04,student_temp=0.1):
     
     # d_loss = mahalanobis_distance(real_energy.detach(),fake_energy.detach()).mean()
     # d_loss = hyperspherical_energy_loss(real_energy.detach(),fake_energy.detach())
-    realistic_logits = real_energy.detach() - fake_energy
-    # realistic_logits = (realistic_logits**2).sum(-1).mean()
-    d_loss = energy_function(real_energy.detach() ,fake_energy,version='softplus')
-    
-    # realistic_logits = realistic_logits.abs()
-    
-    # realistic_logits = F.mse_loss(real_energy.detach(),fake_energy).sum(-1)
-    # # # sigma = 0.01
+    # realistic_logits = real_energy.sum(-1).detach() - fake_energy.sum(-1)
+    # # realistic_logits = realistic_logits.sum(-1).abs()
+    # # realistic_logits = F.mse_loss(real_energy.detach(),fake_energy).sum(-1)
+    # # sigma = 0.01
     # # realistic_logits = torch.exp(-((real_energy.detach()-fake_energy)**2).sum(-1) / (2 * sigma**2))
     
-    # d_loss = F.softplus(realistic_logits)
-
+    # d_loss = F.softplus(realistic_logits.abs()).mean()
     # d_loss = F.mse_loss(real_energy.sum(-1).detach(),fake_energy.sum(-1),reduction='none').mean()
     # d_loss = realistic_logits.mean()
     # d_loss = (real_energy.detach() - fake_energy).abs()
     # d_loss = d_loss.mean(-1).mean()
     # teacher_temp = 0.04
     # student_temp = 0.01
-    # d_loss = torch.sum(-real_energy.detach() * F.log_softmax(fake_energy, dim=-1), dim=-1)
-    d_loss = d_loss.mean()
+    # real_energy = F.softmax(real_energy/teacher_temp,dim=-1)
+    # d_loss = torch.sum(-real_energy.detach() * F.log_softmax(fake_energy/student_temp, dim=-1), dim=-1)
+    # d_loss = d_loss.mean()
     
-    # d_loss = (F.mse_loss(real_energy, fake_energy.detach(), reduction='none').sum(dim=-1).mean() + 
-    #         F.mse_loss(fake_energy, real_energy.detach(), reduction='none').sum(dim=-1).mean()) * 0.5
+    d_loss = (F.mse_loss(real_energy, fake_energy.detach(), reduction='none').sum(dim=-1).mean() + 
+            F.mse_loss(fake_energy, real_energy.detach(), reduction='none').sum(dim=-1).mean()) * 0.5
     
-    
+
 
     return loss_tcr,d_loss
 
@@ -512,7 +479,7 @@ def get_args_parser():
     
     # System parameters
     parser.add_argument('--data_path', default='c:/dataset', type=str)
-    parser.add_argument('--output_dir', default='F:/output/cifar10-ebm-cl-ebm')
+    parser.add_argument('--output_dir', default='F:/output/cifar10-ebm-cl-ebm-normed-mse')
     parser.add_argument('--num_workers', default=4, type=int)
     parser.add_argument('--use_amp', action='store_true')
     parser.add_argument('--log_freq', default=100, type=int)
