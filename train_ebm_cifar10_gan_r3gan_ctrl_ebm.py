@@ -64,6 +64,7 @@ class EnergyNet(nn.Module):
     def forward(self, x):
         logits = self.net(x).squeeze()
         logits = self.head(logits)
+        # logits = F.normalize(logits,p=2,dim=-1)
         # print(x.shape)
         # logits = self.head(logits)
         # Add regularization term to prevent collapse
@@ -132,14 +133,14 @@ def mcr(Z1,Z2):
 
 
 # Add SimSiam loss function
-def simsiam_loss(p1, p2, h1, h2):
+def simsiam_loss(p1, p2):
 
     loss_tcr = -R(p1).mean()
     loss_tcr *=1e-2
 
     # Negative cosine similarity
-    loss_cos = (F.cosine_similarity(h1, p2.detach(), dim=-1).mean() + 
-             F.cosine_similarity(h2, p1.detach(), dim=-1).mean()) * 0.5
+    loss_cos = F.cosine_similarity(p1.detach(), p2, dim=-1).mean()
+             
     
     loss_cos = 1-loss_cos
 
@@ -384,13 +385,16 @@ def train_ebm_gan(args):
 
                 loss_cos = 1-F.cosine_similarity(c_real,c_fake,dim=-1).mean()
                 
-                # loss_cos,loss_tcr = simsiam_loss(c_real,c_fake,c_real,c_fake)
-                # cl_loss = loss_tcr#+loss_cos
+                loss_cos1,loss_tcr1 = simsiam_loss(c_real,c_fake)
+                loss_cos2,loss_tcr2 = simsiam_loss(c_fake,c_real)
+                loss_cos = (loss_cos1+loss_cos2)/2  
+                loss_tcr = (loss_tcr1+loss_tcr2)/2
+                loss_cl = loss_tcr+loss_cos
                 # Compute energies
                 real_energy = discriminator(real_samples)
                 fake_energy = discriminator(fake_samples)
                 
-                loss_tcr = -R(real_energy)
+                # loss_tcr = -R(real_energy)*1e-2
 
                 realistic_logits = real_energy - fake_energy
                 d_loss = F.softplus(-realistic_logits).sum(-1).mean()
@@ -400,7 +404,7 @@ def train_ebm_gan(args):
                 r1 = zero_centered_gradient_penalty(real_samples, real_energy)
                 r2 = zero_centered_gradient_penalty(fake_samples, fake_energy)
 
-                d_loss = d_loss + args.gp_weight/2 * (r1 + r2)+loss_tcr 
+                d_loss = d_loss + args.gp_weight/2 * (r1 + r2)+loss_cl 
                 d_loss = d_loss.mean()
 
                 # # Add gradient penalty
