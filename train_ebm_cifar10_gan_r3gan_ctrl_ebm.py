@@ -134,17 +134,18 @@ def mcr(Z1,Z2):
 
 # Add SimSiam loss function
 def simsiam_loss(p1, p2):
+    p1 = F.normalize(p1,p=2,dim=-1)
+    p2 = F.normalize(p2,p=2,dim=-1)
 
     loss_tcr = -R(p1).mean()
-    loss_tcr *=1e-2
-
-    # Negative cosine similarity
-    loss_cos = F.cosine_similarity(p1.detach(), p2, dim=-1).mean()
-             
+    # loss_tcr *=1e-2
     
-    loss_cos = 1-loss_cos
-
-    return loss_cos,loss_tcr
+    # Negative cosine similarity
+    # loss_cos = F.cosine_similarity(p1.detach(), p2, dim=-1).mean()
+    diff = p1.detach()-p2
+    loss_en = F.logsigmoid(diff**2).sum(-1).mean()
+    
+    return loss_en,loss_tcr
 
 def tcr_loss(Z1,Z2):
     Z1 = F.normalize(Z1,p=2,dim=-1)
@@ -361,6 +362,14 @@ def train_ebm_gan(args):
             start_epoch = checkpoint['epoch'] + 1
             print(f"Resuming from epoch {start_epoch}")
     
+    import utils_ibot as utils
+    cl_scheduler = utils.cosine_scheduler(
+        base_value=0.0, 
+        final_value=1.0, 
+        epochs=args.epochs, 
+        niter_per_ep=len(trainloader), 
+        warmup_epochs=0,
+        start_warmup_value=0)
     # Training loop
     for epoch in range(start_epoch,args.epochs):
         generator.train()
@@ -369,7 +378,7 @@ def train_ebm_gan(args):
         for i, (real_samples, _) in enumerate(tqdm(trainloader)):
             batch_size = real_samples.size(0)
             real_samples = real_samples.to(device)
-            
+            cl_wieght = cl_scheduler[epoch*len(trainloader)+i]
             # Train Discriminator
             for _ in range(args.n_critic):  # Train discriminator more frequently
                 d_optimizer.zero_grad()
@@ -385,11 +394,11 @@ def train_ebm_gan(args):
 
                 loss_cos = 1-F.cosine_similarity(c_real,c_fake,dim=-1).mean()
                 
-                loss_cos1,loss_tcr1 = simsiam_loss(c_real,c_fake)
-                loss_cos2,loss_tcr2 = simsiam_loss(c_fake,c_real)
-                loss_cos = (loss_cos1+loss_cos2)/2  
+                loss_en1,loss_tcr1 = simsiam_loss(c_real,c_fake)
+                loss_en2,loss_tcr2 = simsiam_loss(c_fake,c_real)
+                loss_en = (loss_en1+loss_en2)/2  
                 loss_tcr = (loss_tcr1+loss_tcr2)/2
-                loss_cl = loss_tcr+loss_cos
+                loss_cl = loss_tcr+loss_en
                 # Compute energies
                 real_energy = discriminator(real_samples)
                 fake_energy = discriminator(fake_samples)
@@ -404,7 +413,7 @@ def train_ebm_gan(args):
                 r1 = zero_centered_gradient_penalty(real_samples, real_energy)
                 r2 = zero_centered_gradient_penalty(fake_samples, fake_energy)
 
-                d_loss = d_loss + args.gp_weight/2 * (r1 + r2)+loss_cl 
+                d_loss = d_loss + args.gp_weight/2 * (r1 + r2)+loss_cl*cl_wieght
                 d_loss = d_loss.mean()
 
                 # # Add gradient penalty
@@ -440,7 +449,7 @@ def train_ebm_gan(args):
                 current_d_lr = d_optimizer.param_groups[0]['lr']
                 print(f'Epoch [{epoch}/{args.epochs}], Step [{i}/{len(trainloader)}], '
                       f'D_loss: {d_loss.item():.4f}, G_loss: {g_loss.item():.4f}, '
-                    #   f'cl_loss: {cl_loss.item():.4f}, '
+                      f'loss_en: {loss_en.item():.4f}, cl_wieght: {cl_wieght:.4f},'
                       f'tcr_loss: {loss_tcr.item():.4f}, '
                       f'cos_loss: {loss_cos.item():.4f}, '
                       f'r1: {r1.mean().item():.4f}, r2: {r2.mean().item():.4f}, '
@@ -492,7 +501,7 @@ def save_gan_samples(generator, discriminator, epoch, output_dir, device, n_samp
         plt.figure(figsize=(10, 10))
         plt.imshow(grid.cpu().permute(1, 2, 0))
         plt.axis('off')
-        plt.savefig(os.path.join(output_dir, f'gan_samples_real_epoch_{epoch}.png'))
+        plt.savefig(os.path.join(output_dir, f'gan_samples_epoch_{epoch}_real.png'))
 
 
 
@@ -543,8 +552,8 @@ def get_args_parser():
     parser.add_argument('--batch_size', default=128, type=int)
     parser.add_argument('--lr', default=1e-4, type=float)
     
-    parser.add_argument('--data_path', default='/home/qianqian/repo/cnn_cl/data', type=str)
-    parser.add_argument('--output_dir', default='./output/cifar10-ebm-gan-r3gan-ctrl-ebm')
+    parser.add_argument('--data_path', default='c:/dataset', type=str)
+    parser.add_argument('--output_dir', default='F:/output/cifar10-ebm-gan-r3gan-ctrl-ebm')
     parser.add_argument('--num_workers', default=4, type=int)
     parser.add_argument('--use_amp', action='store_true')
     parser.add_argument('--log_freq', default=100, type=int)

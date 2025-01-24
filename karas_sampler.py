@@ -272,7 +272,7 @@ class KarrasSampler:
         rho=7.0,
         steps=40,
     ):  
-        
+        model.eval()
         latent, mask, ids_restore = model.forward_encoder(img, mask_ratio=mask_ratio)
 
         x = torch.randn_like(img) * self.sigma_max
@@ -291,6 +291,7 @@ class KarrasSampler:
 
         out = (1-mask.unsqueeze(-1)) * model.patchify(img) + mask.unsqueeze(-1) * model.patchify(x)
         out = model.unpatchify(out)
+        model.train()
         return out,mask
 
     def sample_heun(

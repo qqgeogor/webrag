@@ -444,7 +444,8 @@ def visualize_reconstruction(model, images, mask_ratio=0.75, save_path='reconstr
         ])
         
         grid = make_grid(comparison, nrow=n_images, padding=2, normalize=False)
-        return grid
+    model.train()
+    return grid
 
 def save_model(model, optimizer, scheduler, epoch, loss, save_dir='checkpoints'):
     """Save model checkpoint"""
@@ -515,7 +516,7 @@ def get_args_parser():
                         help='MLP hidden dim ratio')
     
     # Training parameters
-    parser.add_argument('--epochs', default=200, type=int,
+    parser.add_argument('--epochs', default=800, type=int,
                         help='Number of epochs to train')
     parser.add_argument('--batch_size', default=128, type=int,
                         help='Batch size per GPU')
@@ -541,9 +542,9 @@ def get_args_parser():
                         help='Use gradient checkpointing to save memory')
     
     # Logging and saving
-    parser.add_argument('--output_dir', default='./output',
+    parser.add_argument('--output_dir', default='F:/output/cifar10-mae-edm',
                         help='Path where to save checkpoints and logs')
-    parser.add_argument('--save_freq', default=5, type=int,
+    parser.add_argument('--save_freq', default=10, type=int,
                         help='Frequency of saving checkpoints')
     parser.add_argument('--log_freq', default=100, type=int,
                         help='Frequency of logging training progress')
