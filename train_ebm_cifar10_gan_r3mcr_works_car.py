@@ -268,30 +268,32 @@ class Generator(nn.Module):
         self.embedding = nn.Embedding(num_classes, embedding_dim)
         
         self.net = nn.Sequential(
-            # Initial projection - now takes latent_dim + embedding_dim as input
+            # Initial projection
             nn.Linear(latent_dim + embedding_dim, hidden_dim * 8 * 4 * 4),
             nn.LeakyReLU(0.2),
             
-            # Reshape layer instead of lambda
             Reshape((hidden_dim * 8, 4, 4)),
             
             # [4x4] -> [8x8]
-            nn.ConvTranspose2d(hidden_dim * 8, hidden_dim * 4, 4, 2, 1),
+            nn.Upsample(scale_factor=2, mode='bilinear', align_corners=False),
+            nn.Conv2d(hidden_dim * 8, hidden_dim * 4, 3, 1, 1),
             nn.BatchNorm2d(hidden_dim * 4),
             nn.LeakyReLU(0.2),
             
             # [8x8] -> [16x16]
-            nn.ConvTranspose2d(hidden_dim * 4, hidden_dim * 2, 4, 2, 1),
+            nn.Upsample(scale_factor=2, mode='bilinear', align_corners=False),
+            nn.Conv2d(hidden_dim * 4, hidden_dim * 2, 3, 1, 1),
             nn.BatchNorm2d(hidden_dim * 2),
             nn.LeakyReLU(0.2),
             
             # [16x16] -> [32x32]
-            nn.ConvTranspose2d(hidden_dim * 2, hidden_dim, 4, 2, 1),
+            nn.Upsample(scale_factor=2, mode='bilinear', align_corners=False),
+            nn.Conv2d(hidden_dim * 2, hidden_dim, 3, 1, 1),
             nn.BatchNorm2d(hidden_dim),
             nn.LeakyReLU(0.2),
             
             # Final layer
-            nn.ConvTranspose2d(hidden_dim, 3, 3, 1, 1),
+            nn.Conv2d(hidden_dim, 3, 3, 1, 1),
             nn.Tanh()
         )
         
@@ -306,6 +308,7 @@ class Generator(nn.Module):
     def forward(self, z, labels):
         # Combine noise and label embedding
         label_embedding = self.embedding(labels)
+        self.label_embedding = label_embedding
         z = torch.cat([z, label_embedding], dim=1)
         return self.net(z)
 
@@ -430,7 +433,8 @@ def train_ebm_gan(args):
                 r2 = zero_centered_gradient_penalty(fake_samples, fake_energy).mean()
 
 
-                d_loss = -ig(real_energy,fake_energy)  + args.gp_weight/2 * (r1 + r2)
+                d_loss = -ig(real_energy,fake_energy) # + args.gp_weight/2 * (r1 + r2)
+                
                 # d_loss += R(real_energy)*0.5
 
                 # real_energy = F.normalize(real_energy,p=2,dim=-1)
@@ -441,7 +445,7 @@ def train_ebm_gan(args):
                 # Improved EBM-GAN discriminator loss
                 # d_loss = ((real_energy) + (-fake_energy)).mean()
                 
-                # d_loss = -mcr(real_energy,fake_energy)
+                # d_loss = -ig(real_energy,fake_energy)
                 
                 # # Add gradient penalty
                 # gp = compute_gradient_penalty(discriminator, real_samples, fake_samples, device)
@@ -456,6 +460,7 @@ def train_ebm_gan(args):
             # Generate new fake samples
             z = torch.randn(batch_size, args.latent_dim, device=device)
             fake_samples = generator(z, labels)
+            label_embedding = generator.label_embedding
             
             
             real_energy = discriminator(real_samples, labels)
@@ -464,9 +469,11 @@ def train_ebm_gan(args):
             
             # Improved generator loss
             # g_loss = (fake_energy).mean()
-            # g_loss = mcr(real_energy,fake_energy)
+            # g_loss = ig(real_energy,fake_energy)
             # g_loss += -R(fake_energy)*0.5
             g_loss = ig(real_energy,fake_energy)
+
+            g_loss += -R(label_embedding).mean()*0.1
 
             # real_energy = F.normalize(real_energy,p=2,dim=-1)
             # fake_energy = F.normalize(fake_energy,p=2,dim=-1)
@@ -547,7 +554,7 @@ def save_gan_samples(generator, discriminator, epoch, output_dir, device, n_samp
         plt.imshow(grid.cpu().permute(1, 2, 0))
         plt.axis('off')
         plt.savefig(os.path.join(output_dir, f'gan_samples_epoch_{epoch}_3.png'))
-
+    
         plt.close()
 
 

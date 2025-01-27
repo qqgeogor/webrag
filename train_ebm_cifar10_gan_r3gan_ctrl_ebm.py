@@ -26,21 +26,25 @@ class EnergyNet(nn.Module):
             nn.Conv2d(img_channels, hidden_dim, 4, 2, 1),
             # nn.GroupNorm(8, hidden_dim),  # Add normalization
             nn.LeakyReLU(0.2),
+            ResBlock(hidden_dim,hidden_dim,1),
             
             # [B, 64, 16, 16] -> [B, 128, 8, 8]
             nn.Conv2d(hidden_dim, hidden_dim * 2, 4, 2, 1),
             # nn.GroupNorm(8, hidden_dim * 2),  # Add normalization
             nn.LeakyReLU(0.2),
+            ResBlock(hidden_dim*2,hidden_dim*2,1),
             
+
             # [B, 128, 8, 8] -> [B, 256, 4, 4]
             nn.Conv2d(hidden_dim * 2, hidden_dim * 4, 4, 2, 1),
             # nn.GroupNorm(8, hidden_dim * 4),  # Add normalization
             nn.LeakyReLU(0.2),
-            
+            ResBlock(hidden_dim*4,hidden_dim*4,1),
             # [B, 256, 4, 4] -> [B, 512, 2, 2]
             nn.Conv2d(hidden_dim * 4, hidden_dim * 8, 4, 2, 1),
             # nn.GroupNorm(8, hidden_dim * 8),  # Add normalization
             nn.LeakyReLU(0.2),
+            ResBlock(hidden_dim*8,hidden_dim*8,1),
             
             # Final conv to scalar energy: [B, 512, 2, 2] -> [B, 1, 1, 1]
             nn.Conv2d(hidden_dim * 8, 128, 2, 1, 0)
@@ -91,8 +95,8 @@ class ResBlock(nn.Module):
             )
     
     def forward(self, x):
-        out = F.leaky_relu(self.gn1(self.conv1(x)), 0.2)
-        out = self.gn2(self.conv2(out))
+        out = F.leaky_relu(self.conv1(x), 0.2)
+        out = self.conv2(out)
         out += self.shortcut(x)
         out = F.leaky_relu(out, 0.2)
         return out
@@ -257,22 +261,28 @@ class Generator(nn.Module):
             
             # Reshape layer instead of lambda
             Reshape((hidden_dim * 8, 4, 4)),
+            ResBlock(hidden_dim*8,hidden_dim*8,1),
             
+
             # [4x4] -> [8x8]
             nn.ConvTranspose2d(hidden_dim * 8, hidden_dim * 4, 4, 2, 1),
             nn.BatchNorm2d(hidden_dim * 4),
             nn.LeakyReLU(0.2),
+            ResBlock(hidden_dim*4,hidden_dim*4,1),
             
+
             # [8x8] -> [16x16]
             nn.ConvTranspose2d(hidden_dim * 4, hidden_dim * 2, 4, 2, 1),
             nn.BatchNorm2d(hidden_dim * 2),
             nn.LeakyReLU(0.2),
-            
+            ResBlock(hidden_dim*2,hidden_dim*2,1),  
+
             # [16x16] -> [32x32]
             nn.ConvTranspose2d(hidden_dim * 2, hidden_dim, 4, 2, 1),
             nn.BatchNorm2d(hidden_dim),
             nn.LeakyReLU(0.2),
-            
+            ResBlock(hidden_dim,hidden_dim,1),
+
             # Final layer
             nn.ConvTranspose2d(hidden_dim, 3, 3, 1, 1),
             nn.Tanh()

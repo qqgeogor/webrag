@@ -14,6 +14,7 @@ import argparse
 import torch.nn.functional as F
 
 def zero_centered_gradient_penalty(samples, critics):
+
     grad, = torch.autograd.grad(outputs=critics.sum(), inputs=samples, create_graph=True)
     return grad.square().sum([1, 2, 3])
 
@@ -394,7 +395,7 @@ def train_ebm_gan(args):
                 
                 realistic_logits = real_energy - fake_energy
                 # d_loss = F.softplus(-realistic_logits)
-                d_loss = -F.logsigmoid(realistic_logits).sum(-1).mean()
+                d_loss = F.softplus(-realistic_logits.sum(-1)).mean()
                 # Improved EBM-GAN discriminator loss
                 # d_loss = (F.softplus(real_energy) + (-fake_energy))
                 
@@ -422,7 +423,7 @@ def train_ebm_gan(args):
 
             realistic_logits = fake_energy - real_energy
             # g_loss = F.softplus(-realistic_logits)
-            g_loss = -F.logsigmoid(realistic_logits).sum(-1).mean()
+            g_loss = F.softplus(-realistic_logits.sum(-1)).sum(-1).mean()
             g_loss = g_loss.mean()
             
             # Improved generator loss

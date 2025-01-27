@@ -531,6 +531,8 @@ def save_gan_samples(generator, discriminator, epoch, output_dir, device, n_samp
 
 
         plt.close()
+    generator.train()
+    discriminator.train()
 
 def compute_gradient_penalty(discriminator, real_samples, fake_samples, device):
     """Compute gradient penalty for improved training stability"""

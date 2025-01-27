@@ -36,18 +36,23 @@ class EnergyNet(nn.Module):
             # Modified initial conv to accept label information
             nn.Conv2d(img_channels + 1, hidden_dim, 4, 2, 1),  # +1 channel for label
             nn.LeakyReLU(0.2),
+            ResBlock(hidden_dim,hidden_dim,1),  
             
             # [B, 64, 16, 16] -> [B, 128, 8, 8]
             nn.Conv2d(hidden_dim, hidden_dim * 2, 4, 2, 1),
             nn.LeakyReLU(0.2),
+            ResBlock(hidden_dim*2,hidden_dim*2,1),
             
+
             # [B, 128, 8, 8] -> [B, 256, 4, 4]
             nn.Conv2d(hidden_dim * 2, hidden_dim * 4, 4, 2, 1),
             nn.LeakyReLU(0.2),
-            
+            ResBlock(hidden_dim*4,hidden_dim*4,1),  
+
             # [B, 256, 4, 4] -> [B, 512, 2, 2]
             nn.Conv2d(hidden_dim * 4, hidden_dim * 8, 4, 2, 1),
             nn.LeakyReLU(0.2),
+            ResBlock(hidden_dim*8,hidden_dim*8,1),
             
             # Final conv to scalar energy: [B, 512, 2, 2] -> [B, 1, 1, 1]
             nn.Conv2d(hidden_dim * 8, 512, 2, 1, 0)
@@ -91,8 +96,8 @@ class ResBlock(nn.Module):
             )
     
     def forward(self, x):
-        out = F.leaky_relu(self.gn1(self.conv1(x)), 0.2)
-        out = self.gn2(self.conv2(out))
+        out = F.leaky_relu(self.conv1(x), 0.2)
+        out = self.conv2(out)
         out += self.shortcut(x)
         out = F.leaky_relu(out, 0.2)
         return out
@@ -267,30 +272,32 @@ class Generator(nn.Module):
         self.embedding = nn.Embedding(num_classes, embedding_dim)
         
         self.net = nn.Sequential(
-            # Initial projection - now takes latent_dim + embedding_dim as input
+            # Initial projection
             nn.Linear(latent_dim + embedding_dim, hidden_dim * 8 * 4 * 4),
             nn.LeakyReLU(0.2),
             
-            # Reshape layer instead of lambda
             Reshape((hidden_dim * 8, 4, 4)),
             
             # [4x4] -> [8x8]
-            nn.ConvTranspose2d(hidden_dim * 8, hidden_dim * 4, 4, 2, 1),
+            nn.Upsample(scale_factor=2, mode='bilinear', align_corners=False),
+            nn.Conv2d(hidden_dim * 8, hidden_dim * 4, 3, 1, 1),
             nn.BatchNorm2d(hidden_dim * 4),
             nn.LeakyReLU(0.2),
             
             # [8x8] -> [16x16]
-            nn.ConvTranspose2d(hidden_dim * 4, hidden_dim * 2, 4, 2, 1),
+            nn.Upsample(scale_factor=2, mode='bilinear', align_corners=False),
+            nn.Conv2d(hidden_dim * 4, hidden_dim * 2, 3, 1, 1),
             nn.BatchNorm2d(hidden_dim * 2),
             nn.LeakyReLU(0.2),
             
             # [16x16] -> [32x32]
-            nn.ConvTranspose2d(hidden_dim * 2, hidden_dim, 4, 2, 1),
+            nn.Upsample(scale_factor=2, mode='bilinear', align_corners=False),
+            nn.Conv2d(hidden_dim * 2, hidden_dim, 3, 1, 1),
             nn.BatchNorm2d(hidden_dim),
             nn.LeakyReLU(0.2),
             
             # Final layer
-            nn.ConvTranspose2d(hidden_dim, 3, 3, 1, 1),
+            nn.Conv2d(hidden_dim, 3, 3, 1, 1),
             nn.Tanh()
         )
         
@@ -305,8 +312,11 @@ class Generator(nn.Module):
     def forward(self, z, labels):
         # Combine noise and label embedding
         label_embedding = self.embedding(labels)
+        self.label_embedding = label_embedding
         z = torch.cat([z, label_embedding], dim=1)
         return self.net(z)
+
+
 
 
 
@@ -615,7 +625,7 @@ def get_args_parser():
     parser.add_argument('--num_workers', default=4, type=int)
     parser.add_argument('--use_amp', action='store_true')
     parser.add_argument('--log_freq', default=100, type=int)
-    parser.add_argument('--save_freq', default=1, type=int)
+    parser.add_argument('--save_freq', default=10, type=int)
     
     # Add learning rate scheduling parameters
     parser.add_argument('--min_lr', default=1e-6, type=float,
